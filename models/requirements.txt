@@ -1,0 +1,12 @@
+ultralytics
+opencv-python
+numpy
+onnxruntime
+torch
+torchvision
+pyyaml
+fastapi
+uvicorn[standard]
+redis
+boto3
+websockets

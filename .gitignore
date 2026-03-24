@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Models (Large files)
+models/yolo/*.pt
+models/face/*.pt
+models/fire/*.pt
+models/lpd/*.pt
+*.pt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Storage & Logs
+storage/
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# Backend
+backend/__pycache__/
+pipeline/__pycache__/
+ui/node_modules/
+ui/dist/

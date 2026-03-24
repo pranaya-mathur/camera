@@ -1,0 +1,42 @@
+
+version: '3'
+services:
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+  backend:
+    build: ./backend
+    command: uvicorn app:app --host 0.0.0.0 --port 8000
+    volumes: ["./backend:/app"]
+    ports: ["8000:8000"]
+    depends_on: [redis]
+  ingest:
+    build: ./pipeline
+    command: python ingest.py
+    volumes: ["./pipeline:/app","./models:/app/models"]
+    depends_on: [redis]
+  motion:
+    build: ./pipeline
+    command: python motion.py
+    volumes: ["./pipeline:/app"]
+    depends_on: [redis]
+  detect:
+    build: ./pipeline
+    command: python detect.py
+    volumes: ["./pipeline:/app","./models:/app/models"]
+    depends_on: [redis]
+  rules:
+    build: ./pipeline
+    command: python rules.py
+    volumes: ["./pipeline:/app"]
+    depends_on: [redis]
+  alerts:
+    build: ./pipeline
+    command: python alerts_to_backend.py
+    volumes: ["./pipeline:/app","./backend:/app/backend"]
+    depends_on: [redis, backend]
+  ui:
+    build: ./ui
+    command: npm run dev -- --host
+    volumes: ["./ui:/app"]
+    ports: ["5173:5173"]

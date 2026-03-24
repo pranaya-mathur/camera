@@ -1,0 +1,14 @@
+
+models:
+  yolo:
+    path: models/yolo/yolov8s-worldv2.pt
+    type: yolo-world
+  face:
+    path: models/face/yolov8n-face.pt
+    type: ultralytics
+  fire:
+    path: models/fire/fire_smoke.pt
+    type: ultralytics
+  lpd:
+    path: models/lpd/model.pt
+    type: ultralytics
