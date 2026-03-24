@@ -4,7 +4,6 @@ from datetime import datetime
 from models.loader import ModelLoader
 
 r=redis.Redis(host=os.getenv("REDIS_HOST","redis"), port=6379)
-sub=r.pubsub(); sub.subscribe("motion")
 
 models_dict=ModelLoader().load()
 
@@ -17,11 +16,17 @@ if "yolo" in models_dict and hasattr(models_dict["yolo"], "set_classes"):
         "auto rickshaw", "motorcycle", "scooter", "car", "bus", "truck", "license plate"
     ])
 
+print(f"[*] Scaling Mode: Listening to 'motion_queue' for tasks...")
 print(f"[*] Loaded models: {list(models_dict.keys())}")
 
-for msg in sub.listen():
-    if msg["type"]!="message": continue
-    cid,img=msg["data"].split(b"|",1)
+while True:
+    # Use BRPOP to wait for a task from the queue (Blocking Pop)
+    # returns (list_name, data)
+    res_queue = r.brpop("motion_queue", timeout=0)
+    if not res_queue: continue
+    
+    data = res_queue[1]
+    cid,img=data.split(b"|",1)
     f=cv2.imdecode(np.frombuffer(img,np.uint8),1)
     
     all_detections = []
@@ -44,23 +49,23 @@ for msg in sub.listen():
                     "box": b.xyxy[0].tolist()
                 })
 
-    # 2. Second Pass: Verify Fire if triggered (Optimized)
-    trigger_words = ["fire", "smoke", "flame", "burning", "haze"]
-    trigger = any(d["label"].lower() in trigger_words and d["conf"] > 0.05 for d in all_detections)
+    # 2. Second Pass: Verify Fire if triggered (MAX SENSITIVITY)
+    trigger_words = ["fire", "smoke", "flame", "burning", "haze", "mist", "fog", "cloud"]
+    trigger = any(d["label"].lower() in trigger_words and d["conf"] > 0.02 for d in all_detections)
     
     if trigger and "fire" in models_dict:
         # Remove unconfirmed triggers
         all_detections = [d for d in all_detections if d["label"].lower() not in trigger_words]
         
-        # Run Heavy Verification
-        res_h = models_dict["fire"](f, imgsz=640, conf=0.2, verbose=False)
+        # Run Heavy Verification (800 pixel resolution for distance)
+        res_h = models_dict["fire"](f, imgsz=800, conf=0.1, verbose=False)
         for rlt in res_h:
             for b in rlt.boxes:
                 cls_id = int(b.cls)
                 label = models_dict["fire"].names[cls_id]
                 all_detections.append({
                     "cls": cls_id,
-                    "label": label,
+                    "label": f"CRITICAL {label}",
                     "conf": float(b.conf),
                     "model": "fire_heavy",
                     "box": b.xyxy[0].tolist()

@@ -10,5 +10,8 @@ for msg in sub.listen():
     g=cv2.cvtColor(f,cv2.COLOR_BGR2GRAY)
     if cid not in prev: prev[cid]=g; continue
     if cv2.absdiff(prev[cid],g).mean()>5:
-        r.publish("motion", msg["data"])
+        # Pushing to a list (queue) instead of publishing to a channel
+        r.lpush("motion_queue", msg["data"])
+        # Keep only the latest 50 frames to avoid memory bloat
+        r.ltrim("motion_queue", 0, 50)
     prev[cid]=g

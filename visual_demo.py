@@ -54,79 +54,46 @@ def main():
         
         display_detections = []
         
-        # 1. First Pass: Light Models (Monitor Mode)
+        # ULTIMATE DEBUG MODE: RUN EVERY MODEL ON EVERY FRAME
         for name, model in models_dict.items():
-            if name == "fire": continue
-            # Using 640 which was confirmed as 'Perfect'
-            results = model(frame, imgsz=640, conf=0.1, verbose=False)
+            # Use 800 high resolution for maximum detail
+            # Set confidence very low (0.05) to catch even ghost detections
+            results = model(frame, imgsz=800, conf=0.05, verbose=False)
             
             for r in results:
                 for box in r.boxes:
+                    conf = float(box.conf[0])
+                    if conf < 0.05: continue
+                    
                     cls_id = int(box.cls[0])
-                    label_name = model.names[cls_id] if hasattr(model, "names") else name
+                    label = model.names[cls_id] if hasattr(model, "names") else name
+                    
+                    # Log to terminal for user to see
+                    print(f"[{name.upper()}] saw {label} at {conf:.2f}")
+                    
                     display_detections.append({
                         "box": box.xyxy[0],
-                        "conf": box.conf[0],
-                        "label": label_name,
+                        "conf": conf,
+                        "label": f"{name}:{label}",
                         "model": name
                     })
 
-        # 2. Second Pass: Verify Fire if triggered (Optimized)
-        # Using very low trigger threshold (0.05) to ensure nothing is missed
-        trigger_words = ["fire", "smoke", "flame", "burning", "haze"]
-        trigger_fire = any(d["label"].lower() in trigger_words and d["conf"] > 0.05 for d in display_detections)
-        
-        if trigger_fire and "fire" in models_dict:
-            # Clear unconfirmed triggers from light model to avoid UI mess
-            display_detections = [d for d in display_detections if d["label"].lower() not in trigger_words]
-            
-            # Run Heavy Verification on the same frame (Verified Mode)
-            res_h = models_dict["fire"](frame, imgsz=640, conf=0.15, verbose=False)
-            for r in res_h:
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    label_name = models_dict["fire"].names[cls_id]
-                    display_detections.append({
-                        "box": box.xyxy[0],
-                        "conf": box.conf[0],
-                        "label": f"CONFIRMED {label_name}",
-                        "model": "fire_heavy"
-                    })
-
-        # 3. Third Pass: Precise License Plate Detection (Triggered by vehicles)
-        vehicle_types = ["car", "bus", "truck", "auto rickshaw", "motorcycle", "scooter"]
-        has_vehicle = any(d["label"].lower() in vehicle_types for d in display_detections)
-        if has_vehicle and "lpd" in models_dict:
-            # Clear unconfirmed/less-precise plates
-            display_detections = [d for d in display_detections if d["label"].lower() != "license plate"]
-            
-            # Run specialized LPD
-            res_l = models_dict["lpd"](frame, imgsz=640, conf=0.2, verbose=False)
-            for r in res_l:
-                for box in r.boxes:
-                    display_detections.append({
-                        "box": box.xyxy[0],
-                        "conf": box.conf[0],
-                        "label": "Number Plate",
-                        "model": "lpd"
-                    })
-
-        # 4. Draw Results
+        # Draw ALL Results
         for d in display_detections:
             x1, y1, x2, y2 = d["box"]
-            color = (0, 255, 0) # Default
+            color = (0, 255, 0) # Default Green
             lname = d["label"].lower()
-            if "fire" in lname: color = (0, 0, 0) # Fixed later
-            if "fire" in lname: color = (0, 0, 255)
-            elif "smoke" in lname: color = (128, 128, 128)
-            elif "plate" in lname: color = (0, 255, 255) # Yellow for plates
-            elif d["model"] == "face": color = (255, 0, 0)
             
-            # Show in UI if above reasonable threshold
-            if d["conf"] > 0.1:
-                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-                label_text = f"{d['label']} {d['conf']:.2f}"
-                cv2.putText(frame, label_text, (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            if "fire" in lname: color = (0, 0, 255) # Red
+            elif "smoke" in lname: color = (128, 128, 128) # Gray
+            elif "face" in lname: color = (255, 0, 0) # Blue
+            elif "plate" in lname: color = (0, 255, 255) # Yellow
+            
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+            cv2.putText(frame, f"{d['label']} {d['conf']:.2f}", (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # Show Window
+        cv2.imshow("SecureVu - India Wildlife & Security Demo", frame)
 
         # 3. Show Window
         cv2.imshow("SecureVu - India Wildlife & Security Demo", frame)

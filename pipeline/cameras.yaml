@@ -1,0 +1,8 @@
+# SecureVu Camera Configuration
+
+# Use 0 for laptop webcam, or "rtsp://..." for IP cameras.
+cameras:
+  webcam_main: 0
+  webcam_office: 0  # Placeholder representing another angle
+  webcam_garage: 0  # Another placeholder
+  webcam_gate: 0    # Fourth placeholder
