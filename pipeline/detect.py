@@ -224,34 +224,47 @@ def process_frame(cid: bytes, img_bytes: bytes):
     return (cid_s, len(all_detections))
 
 
-_err_streak = 0
-_frames_done = 0
-_LOG_EVERY = int(os.getenv("DETECT_LOG_EVERY_N_FRAMES", "20"))
+from concurrent.futures import ProcessPoolExecutor
+import time
 
-while True:
-    res_queue = r.brpop("motion_queue", timeout=0)
-    if not res_queue:
-        continue
-    data = res_queue[1]
-    try:
-        cid, img = data.split(b"|", 1)
-    except ValueError:
-        print("[!] Bad queue payload (expected cid|jpeg)", flush=True)
-        continue
-    try:
-        out = process_frame(cid, img)
-        if out is None:
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "4"))
+NUM_WORKERS = int(os.getenv("NUM_WORKERS", "3"))
+
+def worker_loop():
+    print(f"[*] Worker process {os.getpid()} started", flush=True)
+    _err_streak = 0
+    _frames_done = 0
+    _LOG_EVERY = int(os.getenv("DETECT_LOG_EVERY_N_FRAMES", "20"))
+    
+    while True:
+        # Collect a batch
+        batch_data = []
+        for _ in range(BATCH_SIZE):
+            res_queue = r.brpop("motion_queue", timeout=1)
+            if not res_queue:
+                break
+            batch_data.append(res_queue[1])
+        
+        if not batch_data:
             continue
-        _cid_s, nbox = out
-        _frames_done += 1
-        if _frames_done % _LOG_EVERY == 0:
-            print(
-                f"[*] detect: processed {_frames_done} motion frames "
-                f"(last cam={_cid_s}, boxes={nbox})",
-                flush=True,
-            )
-        _err_streak = 0
-    except Exception:
-        _err_streak += 1
-        if _err_streak <= 3 or _err_streak % 50 == 0:
-            print(f"[!] Frame pipeline error (x{_err_streak}):\n{traceback.format_exc()}")
+            
+        for data in batch_data:
+            try:
+                cid, img = data.split(b"|", 1)
+                out = process_frame(cid, img)
+                if out:
+                    _frames_done += 1
+                    if _frames_done % _LOG_EVERY == 0:
+                        print(f"[*] worker {os.getpid()}: processed {_frames_done} frames", flush=True)
+                _err_streak = 0
+            except Exception:
+                _err_streak += 1
+                if _err_streak <= 3 or _err_streak % 50 == 0:
+                    print(f"[!] Worker error (x{_err_streak}):\n{traceback.format_exc()}")
+
+if __name__ == "__main__":
+    print(f"[*] Starting {NUM_WORKERS} parallel workers with batch_size={BATCH_SIZE}", flush=True)
+    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+        futures = [executor.submit(worker_loop) for _ in range(NUM_WORKERS)]
+        for future in futures:
+            future.result() # Keep main process alive

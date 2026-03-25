@@ -12,14 +12,24 @@ class ModelLoader:
     def load(self):
         import os
         for name, m in self.cfg["models"].items():
-            if not os.path.exists(m["path"]):
-                print(f"[!] Warning: Model {name} not found at {m['path']}, skipping.")
+            base_path = m["path"]
+            engine_path = base_path.replace(".pt", ".engine")
+            
+            # Prefer TensorRT engine if it exists
+            if os.path.exists(engine_path):
+                print(f"[*] Loading TensorRT engine for {name}: {engine_path}")
+                self.models[name] = YOLO(engine_path, task='detect')
                 continue
+                
+            if not os.path.exists(base_path):
+                print(f"[!] Warning: Model {name} weights not found at {base_path}, skipping.")
+                continue
+                
             if m["type"]=="ultralytics":
-                self.models[name]=YOLO(m["path"])
+                self.models[name]=YOLO(base_path)
             elif m["type"]=="yolo-world":
                 from ultralytics import YOLOWorld
-                self.models[name]=YOLOWorld(m["path"])
+                self.models[name]=YOLOWorld(base_path)
             elif m["type"]=="onnx":
-                self.models[name]=ort.InferenceSession(m["path"])
+                self.models[name]=ort.InferenceSession(base_path)
         return self.models

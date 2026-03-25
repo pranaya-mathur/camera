@@ -1,7 +1,8 @@
-import os, time, requests
+import os, time, requests, redis
 import smtplib
 from email.mime.text import MIMEText
 from typing import Dict
+from backend.database import save_alert
 
 class NotificationManager:
     def __init__(self):
@@ -59,7 +60,12 @@ class NotificationManager:
 
         msg = f"🔔 *SECUREVU ALERT*\n\n*Type:* {alert_type.upper()}\n*Camera:* {camera_id}\n*Details:* {details}\n*Time:* {time.ctime()}"
         
+        # Trigger clip saving
+        r = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=6379)
+        r.publish("save_clip", f"{camera_id}|{alert_type}")
+
         # Dispatch to all active channels
+        save_alert(alert_type, camera_id, details)
         self.send_telegram(msg)
         self.send_email(f"SecureVu Alert: {alert_type}", msg)
 

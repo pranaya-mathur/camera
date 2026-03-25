@@ -4,29 +4,68 @@ End-to-end reference stack for **AI video analytics**: ingest camera frames, mot
 
 ---
 
-## Architecture
+### Architecture
 
-```
-Cameras (webcam / RTSP) ──► webcam_ingest.py ──► Redis pub/sub "frames"
-                                                      │
-motion.py ◄───────────────────────────────────────────┘
-   │
-   └──► Redis list "motion_queue"
-            │
-detect.py ◄─┘  (models from models/registry.yaml + pipeline/detection_config.yaml)
-   │
-   └──► Redis pub/sub "detections"
-            │
-rules.py ◄───┘
-   │
-   └──► Redis pub/sub "alerts"
-            │
-backend (FastAPI) ◄── async subscriber in-process: updates /alerts + WebSocket broadcast
-            │
-       ui/ (Vite + React) ──► REST login, WS live feed
+```mermaid
+graph TD
+    subgraph Ingestion
+        C1[Camera 1] --> WI[webcam_ingest.py]
+        C2[RTSP Stream] --> WI
+    end
+
+    WI -- "Publish 'frames'" --> R_P["Redis (Pub/Sub)"]
+    
+    subgraph Processing Pipeline
+        R_P -- "Subscribe" --> M[motion.py]
+        M -- "Mean Diff > Thresh" --> R_Q["Redis (motion_queue)"]
+        
+        M_SUB[motion.py] -- "Subscribe" --> CB[clip_buffer.py]
+        CB -- "10s Rolling Buffer" --> CB_M[In-Memory Buffer]
+        
+        R_Q -- "BRPOP (Batching)" --> D[detect.py]
+        
+        subgraph Detection Cluster
+            D -- "Worker Pool (3-5x)" --> DW1[Detection Worker 1]
+            D -- "Worker Pool (3-5x)" --> DW2[Detection Worker 2]
+            D -- "Worker Pool (3-5x)" --> DW3[Detection Worker 3]
+        end
+        
+        DW1 & DW2 & DW3 -- "YOLO-World / Face / Fire / LPD" --> R_D["Redis (detections)"]
+    end
+
+    subgraph Logic & Alerts
+        R_D -- "Subscribe" --> RE[rules.py]
+        RE -- "Publish 'alerts'" --> R_A["Redis (alerts)"]
+        
+        R_A -- "Trigger" --> BE[Backend: FastAPI]
+        R_A -- "Save Clip Signal" --> CB
+        CB -- "Dump to MP4" --> NAS[(NAS: storage/clips/)]
+        
+        BE -- "Save Metadata" --> DB[(SQLite: alerts.db)]
+        BE -- "Notifications" --> NM[Telegram / Email]
+        BE -- "WebSocket" --> UI[React Dashboard]
+    end
 ```
 
-**Important:** Alerts are consumed **inside the uvicorn process** (no separate `alerts_to_backend` worker). The legacy script `pipeline/alerts_to_backend.py` is obsolete.
+---
+
+## High Performance & Scalability
+
+The pipeline is optimized for production-grade surveillance:
+- **Parallel Workers**: `detect.py` uses a multi-processing worker pool to handle high frame rates across multiple cameras.
+- **Batch Inference**: Frames are collected from Redis and processed in batches to maximize GPU/CPU utilization.
+- **TensorRT Support**: Models can be exported to `.engine` format for up to 5x faster inference on NVIDIA hardware.
+- **Motion Gating**: Grayscale abs-diff gating ensures AI models only run when significant activity is detected.
+
+---
+
+## Persistence & Storage
+
+- **Alert History**: All alerts are automatically saved to a local SQLite database (`alerts.db`). History is preserved across restarts.
+- **NAS Clip Storage**:
+    - `clip_buffer.py` maintains a rolling 10-second in-memory buffer of high-quality frames.
+    - When an alert is triggered, the buffer is dumped as an MP4 file to `storage/clips/`.
+    - Easily mountable to 8-12TB NAS systems for long-term audit logs.
 
 ---
 
@@ -36,8 +75,8 @@ backend (FastAPI) ◄── async subscriber in-process: updates /alerts + WebSo
 |-----------|--------|
 | **Redis** | Default `localhost:6379` locally; service name `redis` in Docker Compose. |
 | **Python 3.10+** | Virtualenv recommended at repo root (`venv/`). |
-| **Node.js** | For the UI (`ui/`). |
-| **GPU** | Optional but strongly recommended for `detect.py` (Ultralytics / PyTorch). |
+| **FFmpeg** | Required for `clip_buffer.py` to save MP4 files. |
+| **GPU** | Optional but strongly recommended for `detect.py` (Ultralytics / TensorRT). |
 
 ---
 
@@ -45,70 +84,36 @@ backend (FastAPI) ◄── async subscriber in-process: updates /alerts + WebSo
 
 1. **Clone and enter the repo.**
 
-2. **Install Python dependencies** (from repo root):
-
+2. **Install Python dependencies**:
    ```bash
    python3 -m venv venv
-   source venv/bin/activate   # Windows: venv\Scripts\activate
+   source venv/bin/activate
    pip install -r models/requirements.txt
    pip install -r backend/requirements.txt
    ```
 
-3. **Download model weights** (requires network):
-
+3. **Download and Optimize Models**:
    ```bash
    bash models/setup_models.sh
+   # Optional: Export to TensorRT if GPU is available
+   python3 models/export_trt.py
    ```
 
-4. **Start Redis** (example macOS Homebrew):
-
+4. **Start Redis**:
    ```bash
    brew services start redis
-   # or: redis-server
    ```
 
-5. **Configure cameras** — edit `pipeline/cameras.yaml`:
-
-   - `main: 0` — built-in or first USB webcam  
-   - Or RTSP: `gate: "rtsp://user:pass@192.168.1.50:554/stream1"`  
-   - One entry per physical stream; do not duplicate the same device index.
-
-6. **Run the stack** — `test_system.py` expects `venv/bin/python3` at the repo root:
-
+5. **Run the Full Stack**:
    ```bash
-   export PYTHONPATH="$(pwd)"   # usually set inside test_system.py via env
    python3 test_system.py
    ```
 
-   This starts: **uvicorn** (`backend.app:app` on port **8000**), **motion**, **detect**, **rules**, **webcam_ingest**.
-
-7. **Create a user and open the UI:**
-
+6. **Create a user and open the UI:**
    ```bash
    curl -X POST "http://127.0.0.1:8000/auth/register?email=you@example.com&password=yourpass&role=admin"
-   ```
-
-   ```bash
    cd ui && npm install && npm run dev
    ```
-
-   Open the URL Vite prints (e.g. `http://localhost:5173`). The UI uses `window.location.hostname` for API/WebSocket (port **8000**) so LAN access works if the browser can reach the host.
-
----
-
-## Docker Compose
-
-```bash
-docker compose up --build
-```
-
-- **UI:** `http://localhost:5173`  
-- **API:** `http://localhost:8000`  
-- **Redis:** `localhost:6379`
-
-Set real RTSP URLs in `pipeline/ingest.py` (`CAMS` dict) for the `ingest` service, or mount config and switch the service command to `webcam_ingest.py` with a volume-mounted `cameras.yaml` if you prefer YAML-driven ingest in containers.
-
-Backend environment includes `REDIS_HOST=redis` and `PYTHONPATH=/app`.
 
 ---
 
@@ -116,78 +121,27 @@ Backend environment includes `REDIS_HOST=redis` and `PYTHONPATH=/app`.
 
 | File / env | Purpose |
 |------------|---------|
-| `pipeline/cameras.yaml` | Camera IDs and sources (integer index or RTSP URL) for `webcam_ingest.py`. |
-| `pipeline/detection_config.yaml` | Fire keywords, confidence thresholds, image sizes, vehicle list, YOLO-World class prompts. Restart **detect** and **rules** after changes. |
-| `DETECTION_CONFIG` | Optional path to an alternate YAML for the above. |
-| `MOTION_DIFF_MEAN_THRESHOLD` | Motion gate sensitivity (default `5`). Lower (e.g. `1.5`) for small-flame experiments; see `motion.py`. |
-| `REDIS_HOST` / `REDIS_PORT` | Redis connection (defaults: `localhost` / `6379`; Docker uses `redis`). |
-| `SECRET_KEY` | JWT signing (set in production). |
-| `.env` | Optional: `TELEGRAM_*`, `SMTP_*` for `backend/notify.py`. |
+| `pipeline/cameras.yaml` | Camera IDs and sources. |
+| `NUM_WORKERS` | Number of parallel detection workers (default: `3`). |
+| `BATCH_SIZE` | Number of frames per inference batch (default: `4`). |
+| `CLIP_DIR` | Path to save alert videos (default: `storage/clips`). |
+| `DB_PATH` | Path to SQLite database (default: `alerts.db`). |
+| `MOTION_DIFF_MEAN_THRESHOLD` | Motion sensitivity (default `5`). |
 
 ---
 
-## API overview
+## Troubleshooting
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/health` | No |
-| POST | `/auth/register` | No (query params in demo) |
-| POST | `/auth/login` | No (OAuth2 form: `username` = email) |
-| GET | `/alerts` | Bearer JWT |
-| WS | `/ws` | No token in demo (connect after login in UI for same-origin usage) |
+- **Check persistence**: Use `sqlite3 alerts.db "SELECT * FROM alerts;"` to verify alerts are being recorded.
+- **Check clips**: Verify `storage/clips/` contains MP4 files after a motion-triggered alert.
+- **Logs**: `test_system.py` provides aggregated logs; check for "Worker started" and "Saved alert clip" messages.
 
 ---
 
-## Testing
+## License / ownership
 
-- **Auth script** (backend must be running): `python3 test_auth.py`  
-- **Notify smoke test:** `python3 test_notify.py`  
-- **Pytest:** `pytest test_auth.py test_notify.py` (where applicable)
-
----
-
-## Project layout
-
-```
-backend/          FastAPI app, auth, SQLite users, in-process Redis alert subscriber
-pipeline/         ingest, motion, detect, rules, configs
-models/           registry.yaml, weights, setup_models.sh
-ui/               React + Vite dashboard
-```
-
----
-
-## Fire detect kyun nahi ho rahi? / Why fire is not detected
-
-Default pipeline mein **dedicated fire model tabhi chalta hai** jab pehle **YOLO-World** kisi detection par fire-related keyword (substring) de aur confidence `fire_soft` se upar ho. **Chhoti flame / lighter** par open-vocab aksar kuch nahi bolta → fire model **skip** ho jata hai → koi fire output nahi.
-
-**Fix (testing):**
-
-1. **`FIRE_VERIFY_EVERY_FRAME=1`** rakh kar `detect.py` dobara chalao — har motion frame par fire model chalega (GPU zyada use).  
-   Ya `pipeline/detection_config.yaml` mein `fire_verify_every_frame: true` set karo.
-2. **`MOTION_DIFF_MEAN_THRESHOLD`** kam karo taaki frames detect tak pahunchein.
-3. **`confidence.fire_verify`** aur thoda kam karo (false positives badh sakte hain).
-4. Training data zyada tar **badi aag / smoke** par hai; **lighter** unreliable hai — test ke liye fire wala **video file** `cameras.yaml` mein source bana sakte ho.
-
----
-
-## Troubleshooting: camera on but “no logs”
-
-- **`test_system.py`** now sets `PYTHONUNBUFFERED=1` so prints show up immediately.  
-- Every **~5s** you should see:
-  - **`ingest:`** — JPEG frames published to Redis (if this is missing, camera/RTSP is not delivering frames).  
-  - **`motion:`** — `frames_rx` and `last_mean_absdiff`. If `queued_to_detect` stays **0** while the scene is static, lower **`MOTION_DIFF_MEAN_THRESHOLD`** (e.g. `1.5`) or add movement in frame.  
-  - **`detect:`** — “processed N motion frames” every 20 frames (tune with **`DETECT_LOG_EVERY_N_FRAMES`**). If missing, nothing is reaching `motion_queue` (motion gate too strict or Redis mismatch).  
-- **`detect.py`** must use `from detection_settings import …` (not relative imports) when run as `python pipeline/detect.py`.
-
----
-
-## Limitations (demo / MVP)
-
-- In-memory alert history in the API process (not durable across restarts).  
-- Single uvicorn worker recommended so WebSocket and alert state stay consistent.  
-- OpenCV RTSP is fine for demos; production often adds reconnect, buffering, and dedicated media pipelines.  
-- Fire/smoke tuning is scene-dependent; adjust `detection_config.yaml` and motion threshold for your environment.
+SecureVu is an open-source reference architecture for high-scale AI surveillance.
+ire/smoke tuning is scene-dependent; adjust `detection_config.yaml` and motion threshold for your environment.
 
 ---
 

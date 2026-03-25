@@ -29,7 +29,10 @@ try:
     # 4. Start Rule Engine
     run("venv/bin/python3 pipeline/rules.py", "Rules")
 
-    # 5. Webcam Ingestion (alerts: FastAPI subscribes to Redis "alerts" in-process)
+    # 5. Clip Buffer (for NAS storage)
+    run("venv/bin/python3 pipeline/clip_buffer.py", "Clip Buffer")
+
+    # 6. Webcam Ingestion (alerts: FastAPI subscribes to Redis "alerts" in-process)
     run("venv/bin/python3 pipeline/webcam_ingest.py", "Webcam Ingest")
 
     print("\n[!] All backend components ARE RUNNING. Press Ctrl+C to stop.\n")
