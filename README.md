@@ -1,6 +1,19 @@
-# SecureVU
+# SecureVu: AI Surveillance Prototype
 
-End-to-end reference stack for **AI video analytics**: ingest camera frames, motion-gate them, run multi-model detection (YOLO-World, face, fire/smoke, license plates), apply rules, and push alerts to a **FastAPI** backend with a **React** dashboard (JWT + WebSocket).
+SecureVu is an experimental AI video analytics stack designed for research and testing. It provides an end-to-end pipeline for real-time camera ingestion, motion-gated multi-model detection (YOLO-World, Face, Fire/Smoke, License Plates), and intelligent alert dispatching with persistence and a modern dashboard.
+
+> [!IMPORTANT]
+> This system is currently in the **Prototype / Testing Phase**. It is NOT recommended for production deployment without extensive validation in your specific environment.
+
+---
+
+### Key Features
+
+- **Experimental Multi-Worker Architecture**: Uses a parallel worker pool (`detect.py`) for high-throughput inference across multiple streams.
+- **Open-Vocabulary Cross-Verification**: Leverages YOLO-World to filter false positives (e.g., distinguishing lamps/sockets from actual fire).
+- **Infinite Alert History**: Persistent SQLite storage (`alerts.db`) for all detected events.
+- **NAS-Optimized Clip Storage**: Rolling 10-second buffer with automatic MP4 dump on alerts, ready for high-capacity storage testing.
+- **Evaluation Framework**: Built-in scripts for measuring FPS, latency, and detection accuracy.
 
 ---
 
@@ -10,38 +23,38 @@ End-to-end reference stack for **AI video analytics**: ingest camera frames, mot
 graph TD
     subgraph Ingestion
         C1[Camera 1] --> WI[webcam_ingest.py]
-        C2[RTSP Stream] --> WI
+        C2[RTSP/File] --> WI
     end
 
-    WI -- "Publish 'frames'" --> R_P["Redis (Pub/Sub)"]
+    WI -- "Redis 'frames'" --> R_P["Redis (Pub/Sub)"]
     
     subgraph Processing Pipeline
         R_P -- "Subscribe" --> M[motion.py]
-        M -- "Mean Diff > Thresh" --> R_Q["Redis (motion_queue)"]
+        M -- "Motion Gate" --> R_Q["Redis (motion_queue)"]
         
-        M_SUB[motion.py] -- "Subscribe" --> CB[clip_buffer.py]
-        CB -- "10s Rolling Buffer" --> CB_M[In-Memory Buffer]
+        R_P -- "Subscribe" --> CB[clip_buffer.py]
+        CB -- "10s Rolling Buffer" --> CB_M[In-Memory]
         
         R_Q -- "BRPOP (Batching)" --> D[detect.py]
         
         subgraph Detection Cluster
-            D -- "Worker Pool (3-5x)" --> DW1[Detection Worker 1]
-            D -- "Worker Pool (3-5x)" --> DW2[Detection Worker 2]
-            D -- "Worker Pool (3-5x)" --> DW3[Detection Worker 3]
+            D -- "Worker Pool" --> DW1[Worker 1]
+            D -- "Worker Pool" --> DW2[Worker 2]
+            D -- "Worker Pool" --> DW3[Worker 3]
         end
         
         DW1 & DW2 & DW3 -- "YOLO-World / Face / Fire / LPD" --> R_D["Redis (detections)"]
     end
 
-    subgraph Logic & Alerts
-        R_D -- "Subscribe" --> RE[rules.py]
+    subgraph Intelligence & Alerts
+        R_D -- "Logic Board" --> RE[rules.py]
         RE -- "Publish 'alerts'" --> R_A["Redis (alerts)"]
         
         R_A -- "Trigger" --> BE[Backend: FastAPI]
         R_A -- "Save Clip Signal" --> CB
-        CB -- "Dump to MP4" --> NAS[(NAS: storage/clips/)]
+        CB -- "MP4 Dump" --> NAS[(storage/clips/)]
         
-        BE -- "Save Metadata" --> DB[(SQLite: alerts.db)]
+        BE -- "History Store" --> DB[(SQLite: alerts.db)]
         BE -- "Notifications" --> NM[Telegram / Email]
         BE -- "WebSocket" --> UI[React Dashboard]
     end
@@ -49,13 +62,29 @@ graph TD
 
 ---
 
-## High Performance & Scalability
+## Testing & Evaluation (CRITICAL)
 
-The pipeline is optimized for production-grade surveillance:
-- **Parallel Workers**: `detect.py` uses a multi-processing worker pool to handle high frame rates across multiple cameras.
-- **Batch Inference**: Frames are collected from Redis and processed in batches to maximize GPU/CPU utilization.
-- **TensorRT Support**: Models can be exported to `.engine` format for up to 5x faster inference on NVIDIA hardware.
-- **Motion Gating**: Grayscale abs-diff gating ensures AI models only run when significant activity is detected.
+Use the following tools to benchmark and verify the prototype against custom datasets (e.g., Kaggle Fire/Smoke):
+
+- **Benchmark System Efficiency**: 
+  ```bash
+  python3 evaluate_pipeline.py path/to/video.mp4
+  ```
+  Generates `eval_report.json` with Avg FPS and per-model latency.
+
+- **Advanced Dataset Testing**:
+  ```bash
+  # Run detection test with cross-verification logic
+  python3 test_kaggle_fire.py path/to/dataset/video.mp4 --out result.mp4
+  ```
+
+---
+
+## Performance & Optimization
+
+- **TensorRT Support**: Models can be exported to `.engine` format using `models/export_trt.py` for significant FPS gains on NVIDIA hardware.
+- **Batch Inference**: `detect.py` configures `BATCH_SIZE` and `NUM_WORKERS` to maximize GPU utilization.
+- **Smart Filtering**: The system cross-references specialized fire detections with YOLO-World context to ignore false positives like lamps, sockets, and glowing bulbs.
 
 ---
 
@@ -126,25 +155,17 @@ The pipeline is optimized for production-grade surveillance:
 | `BATCH_SIZE` | Number of frames per inference batch (default: `4`). |
 | `CLIP_DIR` | Path to save alert videos (default: `storage/clips`). |
 | `DB_PATH` | Path to SQLite database (default: `alerts.db`). |
-| `MOTION_DIFF_MEAN_THRESHOLD` | Motion sensitivity (default `5`). |
+## Configuration (`pipeline/detection_config.yaml`)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FIRE_VERIFY_EVERY_FRAME` | `false` | Enable for intense fire testing environments. |
+| `BATCH_SIZE` | `4` | Maximize based on available VRAM. |
+| `NUM_WORKERS` | `3` | Parallel detection processes. |
+| `confidence.fire_verify` | `0.45` | Recommended threshold for testing fire alerts. |
 
 ---
 
-## Troubleshooting
+## License / Ownership
 
-- **Check persistence**: Use `sqlite3 alerts.db "SELECT * FROM alerts;"` to verify alerts are being recorded.
-- **Check clips**: Verify `storage/clips/` contains MP4 files after a motion-triggered alert.
-- **Logs**: `test_system.py` provides aggregated logs; check for "Worker started" and "Saved alert clip" messages.
-
----
-
-## License / ownership
-
-SecureVu is an open-source reference architecture for high-scale AI surveillance.
-ire/smoke tuning is scene-dependent; adjust `detection_config.yaml` and motion threshold for your environment.
-
----
-
-## License / ownership
-
-Add your license and contact here if you publish the repo.
+SecureVu is an open-source reference architecture for AI surveillance research. Fire and smoke tuning is **highly scene-dependent**; always adjust sensitivity and motion thresholds for your specific environment.
