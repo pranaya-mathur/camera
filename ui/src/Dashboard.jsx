@@ -3,17 +3,19 @@ import { Camera, Bell, Shield, LogOut, Search, Settings, AlertTriangle } from 'l
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE, WS_URL } from './config';
 
-const CAMERAS = [
-  { id: 'main', name: 'Gate Main' },
-  { id: 'office', name: 'Office A' },
-  { id: 'garage', name: 'Garage Back' },
-  { id: 'perimeter', name: 'Perimeter 4' }
-];
+// Dynamic cameras loaded from backend
 
 export default function Dashboard({ userRole, onLogout }) {
   const [alerts, setAlerts] = useState([]);
+  const [cameras, setCameras] = useState([]);
 
   useEffect(() => {
+    // Fetch Dynamic Cameras
+    fetch(`${API_BASE}/cameras`)
+      .then(r => r.json())
+      .then(d => setCameras(d.cameras || []))
+      .catch(() => setCameras([{id: 'main', name: 'Main Camera'}]));
+
     const token = localStorage.getItem('token');
     if (token) {
       fetch(`${API_BASE}/alerts`, { headers: { Authorization: `Bearer ${token}` } })
@@ -66,7 +68,7 @@ export default function Dashboard({ userRole, onLogout }) {
 
         {/* Camera Grid */}
         <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
-          {CAMERAS.map((cam, idx) => (
+          {cameras.map((cam, idx) => (
             <motion.div 
               key={idx} className="glass-card" 
               whileHover={{ scale: 1.01 }}

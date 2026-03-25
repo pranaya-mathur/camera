@@ -190,6 +190,26 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/cameras")
+def get_cameras():
+    """Read camera list from pipeline/cameras.yaml."""
+    import yaml
+    cfg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pipeline", "cameras.yaml")
+    try:
+        with open(cfg_path) as f:
+            cams_cfg = yaml.safe_load(f).get("cameras", {})
+        # Convert to Dashboard-friendly format
+        return {
+            "cameras": [
+                {"id": cid, "name": cid.capitalize()} 
+                for cid in cams_cfg.keys() if cams_cfg[cid] is not None
+            ]
+        }
+    except Exception as e:
+        print(f"[!] Error loading cameras: {e}")
+        return {"cameras": [{"id": "main", "name": "Main Camera"}]}
+
+
 @app.get("/alerts")
 def get_alerts(current_user: User = Depends(get_current_user)):
     return {"alerts": alerts[-100:]}

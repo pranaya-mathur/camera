@@ -91,3 +91,12 @@ for msg in sub.listen():
                 cam=cam,
                 label=raw_label.strip() or "Fire / smoke",
             )
+
+        elif label == "license plate":
+            plate_text = d.get("text", "Unknown") # If LPR was active
+            _publish_alert(
+                alert_type="security_alert",
+                cam=cam,
+                label=f"License Plate: {plate_text}",
+                plate=plate_text
+            )
