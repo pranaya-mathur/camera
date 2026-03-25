@@ -1,0 +1,91 @@
+# SecureVU detection tuning — edit this file to adjust behavior without code changes.
+# Reload: restart detect.py and rules.py.
+#
+# Small sources (e.g. cigarette lighter): flame is tiny at 640×360; models are
+# trained mainly on larger fires. Combine: lower MOTION_DIFF_MEAN_THRESHOLD (motion.py),
+# hold flame large in frame, good light, and/or temporarily lower confidence.first_pass
+# / confidence.fire_verify. Safer long-term test: use a short fire video file as a
+# camera source in cameras.yaml.
+
+# If any keyword appears as a substring in a YOLO-World label (lowercased), the
+# dedicated fire/smoke model can run (when conf >= confidence.fire_soft).
+fire_trigger_keywords:
+  - fire
+  - smoke
+  - flame
+  - burning
+  - blaze
+  - haze
+  - mist
+  - fog
+  - lighter
+  - spark
+  - candle
+
+# Same list drives dashboard fire_hazard rules (substring match on final labels).
+# Usually keep identical to fire_trigger_keywords.
+fire_alert_keywords:
+  - fire
+  - smoke
+  - flame
+  - burning
+  - blaze
+  - haze
+  - lighter
+  - spark
+  - candle
+
+confidence:
+  first_pass: 0.08
+  # Open-vocab box must be at least this confident to arm the heavy fire model
+  fire_soft: 0.02
+  # Dedicated fire model threshold (lower = more recall, more false positives)
+  fire_verify: 0.05
+  lpd: 0.2
+
+# false = default: fire model runs ONLY if YOLO-World first tags a fire keyword (often misses
+# small flame / lighter). true = run fire model on EVERY motion frame (heavy GPU; good for tests).
+# Or use env: FIRE_VERIFY_EVERY_FRAME=1
+fire_verify_every_frame: false
+
+imgsize:
+  first_pass: 640
+  fire_verify: 800
+  lpd: 640
+
+# Vehicle labels (exact match on stripped lowercase) → LPD branch
+vehicles:
+  - car
+  - bus
+  - truck
+  - auto rickshaw
+  - motorcycle
+  - scooter
+
+# YOLO-World open-vocabulary prompts (order affects class ids for some paths)
+yolo_world_classes:
+  - person
+  - dog
+  - cat
+  - cow
+  - monkey
+  - snake
+  - reptile
+  - backpack
+  - bag
+  - fire
+  - smoke
+  - flame
+  - burning
+  - haze
+  - lighter
+  - spark
+  - candle
+  - candle flame
+  - auto rickshaw
+  - motorcycle
+  - scooter
+  - car
+  - bus
+  - truck
+  - license plate

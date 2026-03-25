@@ -1,96 +1,257 @@
-
-import redis, cv2, numpy as np, json, os, datetime
+import json
+import os
+import traceback
 from datetime import datetime
+
+import cv2
+import numpy as np
+import redis
+
+from detection_settings import (
+    box_cls_int,
+    box_conf,
+    label_matches_fire_keyword,
+    load_config,
+)
 from models.loader import ModelLoader
+from backend.notify import notifier
 
-r=redis.Redis(host=os.getenv("REDIS_HOST","redis"), port=6379)
+r = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=6379)
 
-models_dict=ModelLoader().load()
+CFG = load_config()
+FIRE_KW = CFG["fire_trigger_keywords"]
+VEHICLES = {v.strip().lower() for v in CFG["vehicles"]}
+CONF = CFG["confidence"]
+IMGSZ = CFG["imgsize"]
 
-# Set classes for YOLO-World
+
+def _fire_verify_every_frame_enabled():
+    v = CFG.get("fire_verify_every_frame")
+    if isinstance(v, str):
+        if v.strip().lower() in ("1", "true", "yes", "on"):
+            return True
+        if v.strip().lower() in ("0", "false", "no", "off"):
+            return False
+    if v is True:
+        return True
+    env = os.getenv("FIRE_VERIFY_EVERY_FRAME", "").strip().lower()
+    return env in ("1", "true", "yes", "on")
+
+
+FIRE_VERIFY_EVERY = _fire_verify_every_frame_enabled()
+
+models_dict = ModelLoader().load()
+
 if "yolo" in models_dict and hasattr(models_dict["yolo"], "set_classes"):
-    # Adding Indian vehicles and license plates
-    models_dict["yolo"].set_classes([
-        "person", "dog", "cat", "cow", "monkey", "snake", "reptile", "backpack", "bag", 
-        "fire", "smoke", "flame", "burning", "haze",
-        "auto rickshaw", "motorcycle", "scooter", "car", "bus", "truck", "license plate"
-    ])
+    models_dict["yolo"].set_classes(CFG["yolo_world_classes"])
 
-print(f"[*] Scaling Mode: Listening to 'motion_queue' for tasks...")
-print(f"[*] Loaded models: {list(models_dict.keys())}")
+print("[*] Listening on motion_queue (Redis BRPOP)", flush=True)
+print(f"[*] Loaded models: {list(models_dict.keys())}", flush=True)
+print(
+    f"[*] Detection config: {os.environ.get('DETECTION_CONFIG', 'pipeline/detection_config.yaml')}",
+    flush=True,
+)
+if FIRE_VERIFY_EVERY:
+    print(
+        "[*] FIRE_VERIFY_EVERY_FRAME=on → dedicated fire model on every motion frame (high load)",
+        flush=True,
+    )
+else:
+    print(
+        "[*] Fire model runs only when YOLO-World hits a fire keyword "
+        "(set fire_verify_every_frame: true or FIRE_VERIFY_EVERY_FRAME=1 to always run)",
+        flush=True,
+    )
 
-while True:
-    # Use BRPOP to wait for a task from the queue (Blocking Pop)
-    # returns (list_name, data)
-    res_queue = r.brpop("motion_queue", timeout=0)
-    if not res_queue: continue
-    
-    data = res_queue[1]
-    cid,img=data.split(b"|",1)
-    f=cv2.imdecode(np.frombuffer(img,np.uint8),1)
-    
-    all_detections = []
-    
-    # 1. First Pass: Light Models (Monitor Mode)
+
+def _run_first_pass(frame, all_detections):
+    sz = IMGSZ["first_pass"]
+    cf = CONF["first_pass"]
     for name, model in models_dict.items():
-        if name == "fire": continue # Skip heavy model initially
-        # Using 640 confirmed as 'Perfect'
-        res = model(f, imgsz=640, conf=0.1, verbose=False)
+        if name == "fire":
+            continue
+        if not callable(model):
+            continue
+        try:
+            res = model(frame, imgsz=sz, conf=cf, verbose=False)
+        except Exception as e:
+            print(f"[!] Model '{name}' inference error: {e}")
+            continue
         for rlt in res:
+            if rlt.boxes is None:
+                continue
             for b in rlt.boxes:
-                cls_id = int(b.cls)
-                label = model.names[cls_id] if hasattr(model, "names") else name
-                
-                all_detections.append({
-                    "cls": cls_id,
-                    "label": label,
-                    "conf": float(b.conf),
-                    "model": name,
-                    "box": b.xyxy[0].tolist()
-                })
+                cls_id = box_cls_int(b)
+                m = model
+                label = m.names[cls_id] if hasattr(m, "names") and m.names else name
+                all_detections.append(
+                    {
+                        "cls": cls_id,
+                        "label": label,
+                        "conf": box_conf(b),
+                        "model": name,
+                        "box": b.xyxy[0].tolist(),
+                    }
+                )
 
-    # 2. Second Pass: Verify Fire if triggered (MAX SENSITIVITY)
-    trigger_words = ["fire", "smoke", "flame", "burning", "haze", "mist", "fog", "cloud"]
-    trigger = any(d["label"].lower() in trigger_words and d["conf"] > 0.02 for d in all_detections)
-    
-    if trigger and "fire" in models_dict:
-        # Remove unconfirmed triggers
-        all_detections = [d for d in all_detections if d["label"].lower() not in trigger_words]
-        
-        # Run Heavy Verification (800 pixel resolution for distance)
-        res_h = models_dict["fire"](f, imgsz=800, conf=0.1, verbose=False)
-        for rlt in res_h:
-            for b in rlt.boxes:
-                cls_id = int(b.cls)
-                label = models_dict["fire"].names[cls_id]
-                all_detections.append({
+
+def _fire_soft_triggered(all_detections):
+    soft = CONF["fire_soft"]
+    for d in all_detections:
+        if d["conf"] <= soft:
+            continue
+        if label_matches_fire_keyword(d["label"], FIRE_KW):
+            return True
+    return False
+
+
+def _strip_soft_fire_labels(all_detections):
+    return [
+        d
+        for d in all_detections
+        if not label_matches_fire_keyword(d["label"], FIRE_KW)
+    ]
+
+
+def _run_fire_verify(frame, all_detections, cid: str):
+    if "fire" not in models_dict:
+        return
+    model = models_dict["fire"]
+    if not callable(model):
+        return
+    try:
+        res_h = model(
+            frame,
+            imgsz=IMGSZ["fire_verify"],
+            conf=CONF["fire_verify"],
+            verbose=False,
+        )
+    except Exception as e:
+        print(f"[!] Fire model error: {e}")
+        return
+    for rlt in res_h:
+        if rlt.boxes is None:
+            continue
+        for b in rlt.boxes:
+            cls_id = box_cls_int(b)
+            label = model.names[cls_id] if hasattr(model, "names") else "fire"
+            cf = box_conf(b)
+            all_detections.append(
+                {
                     "cls": cls_id,
                     "label": f"CRITICAL {label}",
-                    "conf": float(b.conf),
+                    "conf": cf,
                     "model": "fire_heavy",
-                    "box": b.xyxy[0].tolist()
-                })
+                    "box": b.xyxy[0].tolist(),
+                }
+            )
+            notifier.notify("FIRE", cid, f"Verified {label} at {cf:.2f}")
 
-    # 3. Third Pass: Precise License Plate Detection (Triggered by vehicles)
-    vehicle_types = ["car", "bus", "truck", "auto rickshaw", "motorcycle", "scooter"]
-    has_vehicle = any(d["label"].lower() in vehicle_types for d in all_detections)
-    if has_vehicle and "lpd" in models_dict:
-        # Remove YOLO-World's less precise license plate detections
-        all_detections = [d for d in all_detections if d["label"].lower() != "license plate"]
-        
-        # Run specialized LPD
-        res_l = models_dict["lpd"](f, imgsz=640, conf=0.2, verbose=False)
-        for rlt in res_l:
-            for b in rlt.boxes:
-                all_detections.append({
-                    "cls": int(b.cls[0]),
+
+def _has_vehicle(all_detections):
+    for d in all_detections:
+        lab = (d.get("label") or "").strip().lower()
+        if lab in VEHICLES:
+            return True
+    return False
+
+
+def _run_lpd(frame, all_detections, cid: str):
+    if "lpd" not in models_dict:
+        return
+    model = models_dict["lpd"]
+    if not callable(model):
+        return
+    all_detections[:] = [
+        d for d in all_detections if (d.get("label") or "").lower() != "license plate"
+    ]
+    try:
+        res_l = model(
+            frame,
+            imgsz=IMGSZ["lpd"],
+            conf=CONF["lpd"],
+            verbose=False,
+        )
+    except Exception as e:
+        print(f"[!] LPD error: {e}")
+        return
+    for rlt in res_l:
+        if rlt.boxes is None:
+            continue
+        for b in rlt.boxes:
+            all_detections.append(
+                {
+                    "cls": box_cls_int(b),
                     "label": "License Plate",
-                    "conf": float(b.conf[0]),
+                    "conf": box_conf(b),
                     "model": "lpd",
-                    "box": b.xyxy[0].tolist()
-                })
+                    "box": b.xyxy[0].tolist(),
+                }
+            )
+    notifier.notify("VEHICLE", cid, "Vehicle and Plate detected")
+
+
+def process_frame(cid: bytes, img_bytes: bytes):
+    frame = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        print("[!] Skipping frame: imdecode failed (corrupt JPEG?)", flush=True)
+        return None
+
+    cid_s = cid.decode(errors="replace")
+    all_detections = []
+
+    _run_first_pass(frame, all_detections)
+
+    if FIRE_VERIFY_EVERY:
+        _run_fire_verify(frame, all_detections, cid_s)
+    elif _fire_soft_triggered(all_detections):
+        all_detections = _strip_soft_fire_labels(all_detections)
+        _run_fire_verify(frame, all_detections, cid_s)
+
+    if _has_vehicle(all_detections):
+        _run_lpd(frame, all_detections, cid_s)
 
     if all_detections:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Detections: {[d['label'] for d in all_detections]}")
-        
-    r.publish("detections", json.dumps({"cam":cid.decode(), "detections":all_detections}))
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] {cid_s} → {[d['label'] for d in all_detections]}",
+            flush=True,
+        )
+
+    r.publish(
+        "detections",
+        json.dumps({"cam": cid_s, "detections": all_detections}),
+    )
+    return (cid_s, len(all_detections))
+
+
+_err_streak = 0
+_frames_done = 0
+_LOG_EVERY = int(os.getenv("DETECT_LOG_EVERY_N_FRAMES", "20"))
+
+while True:
+    res_queue = r.brpop("motion_queue", timeout=0)
+    if not res_queue:
+        continue
+    data = res_queue[1]
+    try:
+        cid, img = data.split(b"|", 1)
+    except ValueError:
+        print("[!] Bad queue payload (expected cid|jpeg)", flush=True)
+        continue
+    try:
+        out = process_frame(cid, img)
+        if out is None:
+            continue
+        _cid_s, nbox = out
+        _frames_done += 1
+        if _frames_done % _LOG_EVERY == 0:
+            print(
+                f"[*] detect: processed {_frames_done} motion frames "
+                f"(last cam={_cid_s}, boxes={nbox})",
+                flush=True,
+            )
+        _err_streak = 0
+    except Exception:
+        _err_streak += 1
+        if _err_streak <= 3 or _err_streak % 50 == 0:
+            print(f"[!] Frame pipeline error (x{_err_streak}):\n{traceback.format_exc()}")

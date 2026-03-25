@@ -1,11 +1,12 @@
-
 import cv2, redis, os, json, numpy as np
 from datetime import datetime
 from models.loader import ModelLoader
+from pipeline.detection_settings import load_config, box_conf
 
 # Visual demo with YOLO-World (Open Vocabulary for India context)
 
 def main():
+    CFG = load_config()
     print("[*] Initializing models...")
     loader = ModelLoader()
     models_dict = loader.load()
@@ -16,16 +17,12 @@ def main():
 
     # Set classes for YOLO-World
     if "yolo" in models_dict and hasattr(models_dict["yolo"], "set_classes"):
-        # Expanded trigger list for better sensitivity + Indian vehicles & plates
-        models_dict["yolo"].set_classes([
-            "person", "dog", "cat", "cow", "monkey", "snake", "reptile", "backpack", "bag", 
-            "fire", "smoke", "flame", "burning", "haze",
-            "auto rickshaw", "motorcycle", "scooter", "car", "bus", "truck", "license plate"
-        ])
+        models_dict["yolo"].set_classes(CFG["yolo_world_classes"])
 
     print(f"[*] Active models: {list(models_dict.keys())}")
     
     print("[*] Connecting to webcam...")
+    # Use 0 for laptop webcam (adjust if needed per cameras.yaml)
     cap = cv2.VideoCapture(0)
     
     cv2.namedWindow("SecureVu - India Wildlife & Security Demo", cv2.WINDOW_NORMAL)
@@ -93,9 +90,6 @@ def main():
             cv2.putText(frame, f"{d['label']} {d['conf']:.2f}", (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # Show Window
-        cv2.imshow("SecureVu - India Wildlife & Security Demo", frame)
-
-        # 3. Show Window
         cv2.imshow("SecureVu - India Wildlife & Security Demo", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break

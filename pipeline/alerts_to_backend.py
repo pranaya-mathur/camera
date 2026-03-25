@@ -1,16 +1,16 @@
+"""
+Deprecated: the API subscribes to Redis channel "alerts" inside FastAPI (see backend.app).
 
-import redis, json, os, asyncio
-from backend.app import broadcast, alerts
+Do not run this script in production or docker-compose.
+"""
 
-r=redis.Redis(host=os.getenv("REDIS_HOST","redis"), port=6379)
-sub=r.pubsub(); sub.subscribe("alerts")
+def main() -> None:
+    print(
+        "[!] alerts_to_backend.py is obsolete.\n"
+        "    Run uvicorn only — backend.app subscribes to Redis 'alerts' on startup."
+    )
+    raise SystemExit(1)
 
-async def main():
-    for msg in sub.listen():
-        if msg["type"]!="message": continue
-        evt=json.loads(msg["data"])
-        alerts.append(evt)
-        await broadcast(evt)
 
-if __name__=="__main__":
-    asyncio.run(main())
+if __name__ == "__main__":
+    main()

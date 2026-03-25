@@ -1,8 +1,14 @@
-# SecureVu Camera Configuration
+# SecureVu camera sources (pipeline/webcam_ingest.py)
+#
+# - Use integer 0, 1, … for local USB / built-in cameras (one index per physical device).
+# - Do NOT point multiple names at the same index (e.g. four × 0): macOS will deny or
+#   fight over the camera and OpenCV will spam "not authorized" / "failed to initialize".
+# - Use an RTSP URL string for IP cameras, e.g. rtsp://user:pass@192.168.1.50:554/stream1
+#
+# macOS: grant Camera access to the app running Python (Terminal, Cursor, iTerm, etc.):
+#   System Settings → Privacy & Security → Camera
 
-# Use 0 for laptop webcam, or "rtsp://..." for IP cameras.
 cameras:
-  webcam_main: 0
-  webcam_office: 0  # Placeholder representing another angle
-  webcam_garage: 0  # Another placeholder
-  webcam_gate: 0    # Fourth placeholder
+  main: 0
+  # office: rtsp://192.168.1.100/stream1
+  # gate: 1

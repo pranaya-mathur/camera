@@ -6,7 +6,8 @@ import subprocess, time, sys, os
 
 ENV = os.environ.copy()
 ENV["REDIS_HOST"] = "localhost"
-ENV["PYTHONPATH"] = os.getcwd() # So modules can find each other
+ENV["PYTHONPATH"] = os.getcwd()  # So modules can find each other
+ENV["PYTHONUNBUFFERED"] = "1"  # Live logs from all child processes
 
 processes = []
 
@@ -28,10 +29,7 @@ try:
     # 4. Start Rule Engine
     run("venv/bin/python3 pipeline/rules.py", "Rules")
 
-    # 5. Start Alert Broadcaster
-    run("venv/bin/python3 pipeline/alerts_to_backend.py", "Alerts")
-
-    # 6. Start Webcam Ingestion
+    # 5. Webcam Ingestion (alerts: FastAPI subscribes to Redis "alerts" in-process)
     run("venv/bin/python3 pipeline/webcam_ingest.py", "Webcam Ingest")
 
     print("\n[!] All backend components ARE RUNNING. Press Ctrl+C to stop.\n")
