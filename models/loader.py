@@ -32,4 +32,14 @@ class ModelLoader:
                 self.models[name]=YOLOWorld(base_path)
             elif m["type"]=="onnx":
                 self.models[name]=ort.InferenceSession(base_path)
+            
+            # Cleanup between loads to prevent MPS buffer issues
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+            except: pass
+
         return self.models

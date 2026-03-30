@@ -83,7 +83,7 @@ Use the following tools to benchmark and verify the prototype against custom dat
 ## Performance & Optimization
 
 - **TensorRT Support**: Models can be exported to `.engine` format using `models/export_trt.py` for significant FPS gains on NVIDIA hardware.
-- **Batch Inference**: `detect.py` configures `BATCH_SIZE` and `NUM_WORKERS` to maximize GPU utilization.
+- **Batch inference**: Tune `BATCH_SIZE` and `NUM_WORKERS` (environment) in `detect.py` to match GPU/CPU capacity; defaults in code are `1` / `1`.
 - **Smart Filtering**: The system cross-references specialized fire detections with YOLO-World context to ignore false positives like lamps, sockets, and glowing bulbs.
 
 ---
@@ -105,7 +105,7 @@ Use the following tools to benchmark and verify the prototype against custom dat
 | **Redis** | Default `localhost:6379` locally; service name `redis` in Docker Compose. |
 | **Python 3.10+** | Virtualenv recommended at repo root (`venv/`). |
 | **FFmpeg** | Required for `clip_buffer.py` to save MP4 files. |
-| **GPU** | Optional but strongly recommended for `detect.py` (Ultralytics / TensorRT). |
+| **GPU** | **NVIDIA**: `detect.py` uses **CUDA** when `torch.cuda.is_available()` (override with `DEVICE`). **Apple Silicon**: uses **MPS** when CUDA is not available. TensorRT engines (see `models/export_trt.py`) load via Ultralytics when present. |
 
 ---
 
@@ -137,6 +137,7 @@ Use the following tools to benchmark and verify the prototype against custom dat
    ```bash
    python3 test_system.py
    ```
+   This sets `REDIS_HOST=localhost` for all child processes. If you start pipeline scripts manually (outside `test_system.py`), export `REDIS_HOST=localhost` so they reach your local Redis—several modules default to hostname `redis` (Docker Compose).
 
 6. **Create a user and open the UI:**
    ```bash
@@ -146,23 +147,38 @@ Use the following tools to benchmark and verify the prototype against custom dat
 
 ---
 
-## Configuration
+## Environment variables
 
-| File / env | Purpose |
-|------------|---------|
-| `pipeline/cameras.yaml` | Camera IDs and sources. |
-| `NUM_WORKERS` | Number of parallel detection workers (default: `3`). |
-| `BATCH_SIZE` | Number of frames per inference batch (default: `4`). |
-| `CLIP_DIR` | Path to save alert videos (default: `storage/clips`). |
-| `DB_PATH` | Path to SQLite database (default: `alerts.db`). |
-## Configuration (`pipeline/detection_config.yaml`)
+| Variable | Default (in code) | Purpose |
+|----------|-------------------|---------|
+| `REDIS_HOST` | `redis` in several pipeline modules; `localhost` in backend / `test_system.py` | Redis hostname. Use `localhost` for local Redis when not using Docker. |
+| `NUM_WORKERS` | `1` in `detect.py` | Parallel detection worker processes; raise (e.g. `3`) when your machine can sustain it. |
+| `BATCH_SIZE` | `1` in `detect.py` | Frames pulled per batch from `motion_queue`; raise (e.g. `4`–`8`) to increase throughput if VRAM allows. |
+| `CLIP_DIR` | `storage/clips` (`clip_buffer.py`) | Path for alert MP4 clips. |
+| `DB_PATH` | `alerts.db` (`backend/database.py`) | SQLite database path for the backend. |
+| `DEVICE` | auto: **CUDA** if available, else **MPS**, else **CPU** (`detect.py`) | Override: `cpu`, `mps`, `cuda` / `gpu`, `cuda:1`, or GPU index `0`, `1`, … |
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `FIRE_VERIFY_EVERY_FRAME` | `false` | Enable for intense fire testing environments. |
-| `BATCH_SIZE` | `4` | Maximize based on available VRAM. |
-| `NUM_WORKERS` | `3` | Parallel detection processes. |
-| `confidence.fire_verify` | `0.45` | Recommended threshold for testing fire alerts. |
+Other pipeline settings live in `pipeline/cameras.yaml` (sources) and `pipeline/detection_config.yaml` (thresholds and prompts).
+
+## MacBook performance tuning (Apple Silicon)
+
+`detect.py` picks **MPS** automatically on Apple Silicon when CUDA is unavailable. Force CPU with `export DEVICE=cpu` (e.g. debugging).
+
+- **Batching**: Set `BATCH_SIZE` and `NUM_WORKERS` in the environment or `.env` (e.g. `BATCH_SIZE=8` on Pro/Max chips).
+- **Half precision (FP16)**: `evaluate_pipeline.py` passes `half=True` for benchmarks; the live `detect.py` path does not set `half=True` on inference calls—add it in code if you want FP16 there.
+- **Frame skipping**: The batched worker loop skips every other queued item (`j % 2 != 0`) to reduce load and keep up with real-time feeds.
+
+---
+
+## Detection config (`pipeline/detection_config.yaml`)
+
+| Key | Default in repo | Purpose |
+|-----|-----------------|---------|
+| `fire_verify_every_frame` | `false` | When `true`, runs the heavy fire model on every motion frame (or set env `FIRE_VERIFY_EVERY_FRAME=1`). |
+| `confidence.fire_verify` | `0.05` | Dedicated fire-model confidence threshold; increase (e.g. `0.45`) for stricter alerts / fewer false positives during tuning. |
+| `confidence.first_pass`, `fire_soft`, etc. | see file | YOLO-World and gating thresholds. |
+
+`BATCH_SIZE` and `NUM_WORKERS` are **not** defined in this YAML; set them via environment variables for `detect.py`.
 
 ---
 

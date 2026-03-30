@@ -7,10 +7,19 @@ import argparse
 import numpy as np
 from models.loader import ModelLoader
 
+import torch
+DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+
 def evaluate_video(video_path):
     print(f"[*] Starting Evaluation for: {os.path.basename(video_path)}")
+    print(f"[*] Using Device: {DEVICE}")
     loader = ModelLoader()
     models = loader.load()
+    
+    # Move models to device
+    for m in models.values():
+        if hasattr(m, "to"):
+            m.to(DEVICE)
     
     cap = cv2.VideoCapture(video_path)
     stats = {
@@ -26,28 +35,27 @@ def evaluate_video(video_path):
         "fps_list": []
     }
 
+    skip_count = 0
     while True:
         ret, frame = cap.read()
         if not ret: break
         
+        skip_count += 1
+        # if skip_count % 2 == 0: continue # Process all for accuracy
+        
         start_frame = time.time()
         stats["total_frames"] += 1
         
-        # 1. EVALUATE YOLO-WORLD
-        t1 = time.time()
-        res_y = models["yolo"](frame, imgsz=640, conf=0.20, verbose=False)
-        stats["yolo_time"].append(time.time() - t1)
+        # 1. YOLO-WORLD (Use MPS + Half for speed)
+        res_y = models["yolo"](frame, imgsz=416, conf=0.20, verbose=False, device=DEVICE, half=True)
         
-        found_person = False
         for r in res_y:
             for b in r.boxes:
                 label = models["yolo"].names[int(b.cls[0])]
                 if label == "person": stats["detections"]["person"] += 1
         
-        # 2. EVALUATE FIRE MODEL
-        t2 = time.time()
-        res_f = models["fire"](frame, imgsz=800, conf=0.45, verbose=False)
-        stats["fire_time"].append(time.time() - t2)
+        # 2. FIRE MODEL (Use MPS + Half for speed)
+        res_f = models["fire"](frame, imgsz=416, conf=0.45, verbose=False, device=DEVICE, half=True)
         
         for r in res_f:
             for b in r.boxes:

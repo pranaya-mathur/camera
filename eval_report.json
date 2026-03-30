@@ -1,0 +1,15 @@
+{
+    "video": "printer31.mp4",
+    "total_frames": 2953,
+    "performance": {
+        "avg_fps": 3.316023104592851,
+        "avg_yolo_latency_ms": 40.93957367162966,
+        "avg_fire_latency_ms": 267.1281320137207
+    },
+    "detections": {
+        "fire": 120,
+        "smoke": 4,
+        "person": 2353,
+        "fp_ignore": 0
+    }
+}
