@@ -83,7 +83,7 @@ Use the following tools to benchmark and verify the prototype against custom dat
 ## Performance & Optimization
 
 - **TensorRT Support**: Models can be exported to `.engine` format using `models/export_trt.py` for significant FPS gains on NVIDIA hardware.
-- **Batch inference**: Tune `BATCH_SIZE` and `NUM_WORKERS` (environment) in `detect.py` to match GPU/CPU capacity; defaults in code are `1` / `1`.
+- **Detection stack**: Each motion frame runs the full stack in `detect.py`: YOLO-World + face + LPD first pass, optional dedicated **fire/smoke** model when triggered, then **vehicle LPD** when a vehicle class appears. Tune `BATCH_SIZE` (frames pulled from Redis per iteration) and `NUM_WORKERS`; defaults are `1` / `1`.
 - **Smart Filtering**: The system cross-references specialized fire detections with YOLO-World context to ignore false positives like lamps, sockets, and glowing bulbs.
 
 ---
@@ -157,6 +157,8 @@ Use the following tools to benchmark and verify the prototype against custom dat
 | `CLIP_DIR` | `storage/clips` (`clip_buffer.py`) | Path for alert MP4 clips. |
 | `DB_PATH` | `alerts.db` (`backend/database.py`) | SQLite database path for the backend. |
 | `DEVICE` | auto: **CUDA** if available, else **MPS**, else **CPU** (`detect.py`) | Override: `cpu`, `mps`, `cuda` / `gpu`, `cuda:1`, or GPU index `0`, `1`, … |
+| `DETECT_LOG_DETECTIONS` | `1` (on) in `detect.py` | Print each non-empty **merged** detection list (time, camera id, all labels). Set `0` to disable. |
+| `DETECT_LOG_EVERY_N_FRAMES` | `20` in `detect.py` | How often workers log aggregate frame counts. |
 
 Other pipeline settings live in `pipeline/cameras.yaml` (sources) and `pipeline/detection_config.yaml` (thresholds and prompts).
 
@@ -177,6 +179,7 @@ Other pipeline settings live in `pipeline/cameras.yaml` (sources) and `pipeline/
 | `fire_verify_every_frame` | `false` | When `true`, runs the heavy fire model on every motion frame (or set env `FIRE_VERIFY_EVERY_FRAME=1`). |
 | `confidence.fire_verify` | `0.05` | Dedicated fire-model confidence threshold; increase (e.g. `0.45`) for stricter alerts / fewer false positives during tuning. |
 | `confidence.first_pass`, `fire_soft`, etc. | see file | YOLO-World and gating thresholds. |
+| `vehicles` | see file | Each entry gets its own Redis/UI alert type: `vehicle_car`, `vehicle_bus`, `vehicle_truck`, `vehicle_auto_rickshaw`, `vehicle_motorcycle`, `vehicle_scooter` (driven by `rules.py`). |
 
 `BATCH_SIZE` and `NUM_WORKERS` are **not** defined in this YAML; set them via environment variables for `detect.py`.
 

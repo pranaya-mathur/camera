@@ -251,15 +251,9 @@ def _run_lpd(frame, all_detections, cid: str):
     notifier.notify("VEHICLE", cid, "Vehicle and Plate detected")
 
 
-def process_frame(cid: bytes, img_bytes: bytes):
-    frame = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
-    if frame is None:
-        print("[!] Skipping frame: imdecode failed (corrupt JPEG?)", flush=True)
-        return None
-
-    cid_s = cid.decode(errors="replace")
+def pipeline_from_frame(frame, cid_s: str):
+    """Full detection stack: YOLO-World + face + LPD first pass, then fire verify, then vehicle LPD."""
     all_detections = []
-
     _run_first_pass(frame, all_detections)
 
     if FIRE_VERIFY_EVERY:
@@ -270,6 +264,18 @@ def process_frame(cid: bytes, img_bytes: bytes):
 
     if _has_vehicle(all_detections):
         _run_lpd(frame, all_detections, cid_s)
+
+    return all_detections
+
+
+def process_frame(cid: bytes, img_bytes: bytes):
+    frame = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        print("[!] Skipping frame: imdecode failed (corrupt JPEG?)", flush=True)
+        return None
+
+    cid_s = cid.decode(errors="replace")
+    all_detections = pipeline_from_frame(frame, cid_s)
 
     if all_detections:
         print(
@@ -290,10 +296,19 @@ import time
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
 NUM_WORKERS = int(os.getenv("NUM_WORKERS", "1"))
 
+
+def _env_flag(name: str, default_true: bool = True) -> bool:
+    v = os.getenv(name, "1" if default_true else "0").strip().lower()
+    if default_true:
+        return v not in ("0", "false", "no", "off")
+    return v in ("1", "true", "yes", "on")
+
+
 def worker_loop():
     print(f"[*] Worker process {os.getpid()} started (device={DEVICE})", flush=True)
     _frames_done = 0
     _LOG_EVERY = int(os.getenv("DETECT_LOG_EVERY_N_FRAMES", "20"))
+    _log_detections = _env_flag("DETECT_LOG_DETECTIONS", default_true=True)
     
     while True:
         # 1. Pull frames from Redis
@@ -323,37 +338,25 @@ def worker_loop():
                     batch_cids.append(cid.decode(errors="replace"))
             except: continue
             
-        if not batch_frames: continue
-        
-        # 3. True Batch Inference (GPU)
-        # Optimized: Only one pass for yolo/world and face models
+        if not batch_frames:
+            continue
+
+        # 3. Full pipeline per frame (YOLO-World + face + LPD, then fire verify, then vehicle LPD)
         try:
-            for name, model in models_dict.items():
-                if name == "fire" or name == "lpd": continue # We do these conditionally
-                
-                # Ultralytics model supports [f1, f2, f3] as input for batching
-                results = model(batch_frames, imgsz=IMGSZ["first_pass"], conf=CONF["first_pass"], verbose=False, device=DEVICE)
-                
-                # Process results and publish alerts
-                for i, rlt in enumerate(results):
-                    cid_s = batch_cids[i]
-                    detections = []
-                    if rlt.boxes:
-                        for b in rlt.boxes:
-                            cls_id = int(b.cls[0])
-                            detections.append({
-                                "cls": cls_id,
-                                "label": model.names[cls_id] if hasattr(model, "names") else name,
-                                "conf": float(b.conf[0]),
-                                "model": name,
-                                "box": b.xyxy[0].tolist()
-                            })
-                    
-                    # Optional: Run fire/lpd if needed for this specific frame
-                    # This part is kept simple to maintain speed
-                    if detections:
-                        r.publish("detections", json.dumps({"cam": cid_s, "detections": detections}))
-                        
+            for frame, cid_s in zip(batch_frames, batch_cids):
+                all_detections = pipeline_from_frame(frame, cid_s)
+                if all_detections:
+                    if _log_detections:
+                        labs = [d["label"] for d in all_detections]
+                        print(
+                            f"[{datetime.now().strftime('%H:%M:%S')}] "
+                            f"detect cam={cid_s} → {labs}",
+                            flush=True,
+                        )
+                    r.publish(
+                        "detections",
+                        json.dumps({"cam": cid_s, "detections": all_detections}),
+                    )
             _frames_done += len(batch_frames)
             if _frames_done % _LOG_EVERY == 0:
                 print(f"[*] worker {os.getpid()}: processed {_frames_done} frames", flush=True)

@@ -41,6 +41,40 @@ def _load_fire_alert_keywords():
 FIRE_ALERT_KW = tuple(k.lower() for k in _load_fire_alert_keywords())
 
 
+def _load_vehicle_alert_types():
+    """Map detection_config.yaml `vehicles` labels → distinct alert_type (e.g. vehicle_car)."""
+    path = os.environ.get("DETECTION_CONFIG", os.path.join(_DIR, "detection_config.yaml"))
+    defaults = [
+        "car",
+        "bus",
+        "truck",
+        "auto rickshaw",
+        "motorcycle",
+        "scooter",
+    ]
+    if not os.path.isfile(path):
+        vehicles = defaults
+    else:
+        with open(path) as f:
+            cfg = yaml.safe_load(f) or {}
+        vehicles = cfg.get("vehicles") or defaults
+    out = {}
+    for v in vehicles:
+        key = (v or "").strip().lower()
+        if not key:
+            continue
+        slug = key.replace(" ", "_").replace("-", "_")
+        out[key] = f"vehicle_{slug}"
+    return out
+
+
+VEHICLE_ALERT_TYPES = _load_vehicle_alert_types()
+print(
+    f"[*] rules: vehicle alert types: {list(VEHICLE_ALERT_TYPES.values())}",
+    flush=True,
+)
+
+
 def _fire_smoke_match(label_lower: str) -> bool:
     return any(k in label_lower for k in FIRE_ALERT_KW)
 
@@ -76,13 +110,25 @@ for msg in sub.listen():
                 label=f"{label.capitalize()} detected",
             )
 
-        elif label in ["monkey", "snake", "reptile"] or (label == "cow" or cls_id == 3):
+        elif label in ["dog", "cat", "monkey", "snake", "reptile"] or (
+            label == "cow" or cls_id == 3
+        ):
             animal = label if label else "unknown_animal"
             _publish_alert(
                 alert_type="animal_intrusion",
                 cam=cam,
                 label=f"Animal: {animal.replace('_', ' ')}",
                 animal=animal,
+            )
+
+        elif label in VEHICLE_ALERT_TYPES:
+            atype = VEHICLE_ALERT_TYPES[label]
+            pretty = raw_label.strip() or label
+            _publish_alert(
+                alert_type=atype,
+                cam=cam,
+                label=f"{pretty} detected",
+                vehicle=label,
             )
 
         elif _fire_smoke_match(label):
