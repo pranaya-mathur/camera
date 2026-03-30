@@ -11,13 +11,6 @@ import redis
 import yaml
 
 r = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=6379)
-sub = r.pubsub()
-sub.subscribe("detections")
-
-print(
-    "[*] rules: subscribed to Redis 'detections' → will publish 'alerts'",
-    flush=True,
-)
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 if _DIR not in sys.path:
@@ -27,8 +20,10 @@ from zone_logic import (  # noqa: E402
     ZoneRuntimeState,
     bbox_center_norm,
     count_persons_in_zone,
+    count_vehicles_in_zone,
     infer_frame_size,
     point_in_polygon,
+    schedule_allows,
 )
 
 _DETECTION_CONFIG_PATH = os.environ.get(
@@ -96,6 +91,7 @@ def _load_vehicle_alert_types():
 
 
 VEHICLE_ALERT_TYPES = _load_vehicle_alert_types()
+VEHICLE_LABEL_SET: Set[str] = set(VEHICLE_ALERT_TYPES.keys())
 print(
     f"[*] rules: vehicle alert types: {list(VEHICLE_ALERT_TYPES.values())}",
     flush=True,
@@ -209,10 +205,37 @@ def _process_zones(cam: str, detections: List[Dict[str, Any]], w: int, h: int) -
         if len(poly) < 3:
             continue
 
+        sched = z.get("schedule")
+        if not schedule_allows(sched if isinstance(sched, dict) else None):
+            continue
+
         count = count_persons_in_zone(detections, w, h, poly)
         restricted = bool(z.get("restricted", False))
         crowd_max = z.get("crowd_max")
         loiter_sec = float(z.get("loitering_seconds") or 0)
+        loiter_min_p = int(z.get("loitering_min_persons") or 1)
+        loiter_effective = count if count >= max(1, loiter_min_p) else 0
+
+        hoa_labels = z.get("hoa_vehicle_labels")
+        if isinstance(hoa_labels, list) and hoa_labels:
+            hoa_set = {str(x).strip().lower() for x in hoa_labels if str(x).strip()}
+        else:
+            hoa_set = set(VEHICLE_LABEL_SET)
+        if bool(z.get("hoa_vehicle_violation") or z.get("no_vehicles_in_zone")):
+            vcount = count_vehicles_in_zone(detections, w, h, poly, hoa_set)
+            if vcount > 0:
+                hk = f"hoa:{cam}:{zid}"
+                _publish_alert(
+                    alert_type="hoa_vehicle_violation",
+                    cam=cam,
+                    label=f"Vehicle in restricted area ({vcount}) — {name}",
+                    severity="warning",
+                    dedupe_key=hk,
+                    zone_id=zid,
+                    zone_name=name,
+                    vehicles_in_zone=vcount,
+                    rule="hoa_vehicle",
+                )
 
         if restricted and count > 0:
             ik = f"intrusion:{cam}:{zid}"
@@ -247,7 +270,7 @@ def _process_zones(cam: str, detections: List[Dict[str, Any]], w: int, h: int) -
                 )
 
         if loiter_sec > 0:
-            if zone_state.loitering_should_fire(cam, zid, count, loiter_sec):
+            if zone_state.loitering_should_fire(cam, zid, loiter_effective, loiter_sec):
                 lk = f"loiter:{cam}:{zid}"
                 if _publish_alert(
                     alert_type="zone_loitering",
@@ -283,97 +306,108 @@ def _person_in_any_zone(cam: str, d: Dict[str, Any], w: int, h: int) -> bool:
     return False
 
 
-for msg in sub.listen():
-    if msg["type"] != "message":
-        continue
-    data = json.loads(msg["data"])
-    cam = data.get("cam", "unknown")
-    detections: List[Dict[str, Any]] = data.get("detections") or []
-    frame = data.get("frame") or {}
-    w = int(frame.get("w") or 0)
-    h = int(frame.get("h") or 0)
-    if w <= 0 or h <= 0:
-        w, h = infer_frame_size(detections)
-
-    _process_zones(cam, detections, w, h)
-
-    for d in detections:
-        raw_label = d.get("label", "") or ""
-        label = raw_label.lower()
-        cls_id = d.get("cls", -1)
-
-        if _fire_smoke_match(label):
-            _publish_alert(
-                alert_type="fire_hazard",
-                cam=cam,
-                label=raw_label.strip() or "Fire / smoke",
-                severity="critical",
-                dedupe_key=f"fire:{cam}",
-            )
+def _rules_main_loop() -> None:
+    sub = r.pubsub()
+    sub.subscribe("detections")
+    print(
+        "[*] rules: subscribed to Redis 'detections' → will publish 'alerts'",
+        flush=True,
+    )
+    for msg in sub.listen():
+        if msg["type"] != "message":
             continue
+        data = json.loads(msg["data"])
+        cam = data.get("cam", "unknown")
+        detections: List[Dict[str, Any]] = data.get("detections") or []
+        frame = data.get("frame") or {}
+        w = int(frame.get("w") or 0)
+        h = int(frame.get("h") or 0)
+        if w <= 0 or h <= 0:
+            w, h = infer_frame_size(detections)
 
-        custom = _open_vocab_custom_match(label)
-        if custom:
-            at = custom.get("alert_type") or "open_vocab"
-            lab = custom.get("label") or raw_label.strip()
-            dk = f"ov:{cam}:{at}:{custom.get('match')}"
-            _publish_alert(
-                alert_type=at,
-                cam=cam,
-                label=str(lab),
-                severity="info",
-                dedupe_key=dk,
-                match=custom.get("match"),
-            )
-            continue
+        _process_zones(cam, detections, w, h)
 
-        if label in ["person", "face"]:
-            if ENABLE_PERSON_FEED or _person_in_any_zone(cam, d, w, h):
+        for d in detections:
+            raw_label = d.get("label", "") or ""
+            label = raw_label.lower()
+            cls_id = d.get("cls", -1)
+
+            if _fire_smoke_match(label):
                 _publish_alert(
-                    alert_type="intelligence_feed",
+                    alert_type="fire_hazard",
                     cam=cam,
-                    label=f"{label.capitalize()} detected",
-                    severity="info",
-                    dedupe_key=f"personfeed:{cam}:{label}",
+                    label=raw_label.strip() or "Fire / smoke",
+                    severity="critical",
+                    dedupe_key=f"fire:{cam}",
                 )
-            continue
-
-        if label in ["dog", "cat", "monkey", "snake", "reptile"] or (
-            label == "cow" or cls_id == 3
-        ):
-            animal = label if label else "unknown_animal"
-            _publish_alert(
-                alert_type="animal_intrusion",
-                cam=cam,
-                label=f"Animal: {animal.replace('_', ' ')}",
-                severity="warning",
-                dedupe_key=f"animal:{cam}:{animal}",
-                animal=animal,
-            )
-            continue
-
-        if label in VEHICLE_ALERT_TYPES:
-            if not _vehicle_allowed(label):
                 continue
-            atype = VEHICLE_ALERT_TYPES[label]
-            pretty = raw_label.strip() or label
-            _publish_alert(
-                alert_type=atype,
-                cam=cam,
-                label=f"{pretty} detected",
-                severity="info",
-                dedupe_key=f"veh:{cam}:{atype}",
-                vehicle=label,
-            )
-            continue
 
-        if label == "license plate":
-            plate_text = d.get("text", "Unknown")
-            _publish_alert(
-                alert_type="security_alert",
-                cam=cam,
-                label=f"License Plate: {plate_text}",
-                severity="info",
-                dedupe_key=f"plate:{cam}",
-                plate=plate_text,
-            )
+            custom = _open_vocab_custom_match(label)
+            if custom:
+                at = custom.get("alert_type") or "open_vocab"
+                lab = custom.get("label") or raw_label.strip()
+                dk = f"ov:{cam}:{at}:{custom.get('match')}"
+                _publish_alert(
+                    alert_type=at,
+                    cam=cam,
+                    label=str(lab),
+                    severity="info",
+                    dedupe_key=dk,
+                    match=custom.get("match"),
+                )
+                continue
+
+            if label in ["person", "face"]:
+                if ENABLE_PERSON_FEED or _person_in_any_zone(cam, d, w, h):
+                    _publish_alert(
+                        alert_type="intelligence_feed",
+                        cam=cam,
+                        label=f"{label.capitalize()} detected",
+                        severity="info",
+                        dedupe_key=f"personfeed:{cam}:{label}",
+                    )
+                continue
+
+            if label in ["dog", "cat", "monkey", "snake", "reptile"] or (
+                label == "cow" or cls_id == 3
+            ):
+                animal = label if label else "unknown_animal"
+                _publish_alert(
+                    alert_type="animal_intrusion",
+                    cam=cam,
+                    label=f"Animal: {animal.replace('_', ' ')}",
+                    severity="warning",
+                    dedupe_key=f"animal:{cam}:{animal}",
+                    animal=animal,
+                )
+                continue
+
+            if label in VEHICLE_ALERT_TYPES:
+                if not _vehicle_allowed(label):
+                    continue
+                atype = VEHICLE_ALERT_TYPES[label]
+                pretty = raw_label.strip() or label
+                _publish_alert(
+                    alert_type=atype,
+                    cam=cam,
+                    label=f"{pretty} detected",
+                    severity="info",
+                    dedupe_key=f"veh:{cam}:{atype}",
+                    vehicle=label,
+                )
+                continue
+
+            if label == "license plate":
+                plate_text = d.get("text", "Unknown")
+                _publish_alert(
+                    alert_type="security_alert",
+                    cam=cam,
+                    label=f"License Plate: {plate_text}",
+                    severity="info",
+                    dedupe_key=f"plate:{cam}",
+                    plate=plate_text,
+                )
+
+
+if __name__ == "__main__":
+    _rules_main_loop()

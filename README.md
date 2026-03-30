@@ -153,6 +153,17 @@ Use the following tools to benchmark and verify the prototype against custom dat
    cd ui && npm install && npm run dev
    ```
 
+### Automated verification (configs + API + rules import)
+
+With the venv activated and dependencies installed (including `httpx` and `pytest` from `backend/requirements.txt`):
+
+```bash
+python3 verify_stack.py    # syntax, YAML, zone_logic, import rules, TestClient auth, optional Redis ping
+pytest test_auth.py -q       # auth register/login/alerts without a running server
+```
+
+These checks do **not** load GPU models or cameras. For a full live test, run Redis and `python3 test_system.py`, then confirm streams and alerts in the UI.
+
 ---
 
 ## Environment variables
@@ -170,6 +181,7 @@ Use the following tools to benchmark and verify the prototype against custom dat
 | `WEBHOOK_URL` | _(empty)_ | Single URL; `rules.py` POSTs JSON for each alert emitted. |
 | `WEBHOOK_URLS` | _(empty)_ | Comma-separated list of URLs (overrides single-URL usage if set). |
 | `ZONES_CONFIG` | `pipeline/zones.yaml` | Override path for zone definitions consumed by `rules.py`. |
+| `RULES_TIMEZONE` | `UTC` | Default IANA timezone for zone `schedule` windows when a schedule block has no `timezone` key. |
 
 Other pipeline settings live in `pipeline/cameras.yaml` (sources), `pipeline/detection_config.yaml` (thresholds, prompts, rules engine), and `pipeline/zones.yaml` (ROI polygons).
 
@@ -209,9 +221,14 @@ Per zone you can set:
 | Field | Meaning |
 |-------|---------|
 | `polygon` | List of `[x, y]` points (at least three). |
+| `schedule` | Optional **time gate** (no ML): rules for this zone apply only when local time matches. Subkeys: `timezone` (IANA, e.g. `Asia/Kolkata`), optional `days` (`mon`…`sun` or `0`…`6` Mon=0), `windows` (list of `{ start, end }` as `HH:MM`; overnight allowed, e.g. `22:00`→`06:00`). |
 | `restricted` | If `true`, any **person** center inside the polygon raises `zone_intrusion` (subject to global cooldown). |
 | `crowd_max` | If **person** count in zone exceeds this integer, raises `zone_crowd`. |
-| `loitering_seconds` | If someone stays in zone at least this long (continuous presence), raises `zone_loitering` once cooldown allows. |
+| `loitering_seconds` | Dwell time before `zone_loitering` (continuous presence at or above `loitering_min_persons`). |
+| `loitering_min_persons` | Default `1`. Set `2`+ to only alarm when **that many people** are in the zone (group / advanced loitering). |
+| `hoa_vehicle_violation` or `no_vehicles_in_zone` | If `true`, any configured **vehicle** (bbox center in polygon) raises `hoa_vehicle_violation` (HOA / no-parking style). Optional `hoa_vehicle_labels: [car, motorcycle]` to restrict which classes count; default = all vehicle classes from `detection_config.yaml`. |
+
+Default timezone for schedules: env **`RULES_TIMEZONE`** (fallback `UTC`) if a window omits per-zone `timezone`.
 
 Restart **`rules.py`** after editing zones or detection rule sections. Restart **`detect.py`** if you change `yolo_world_classes` or model thresholds.
 

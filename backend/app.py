@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, Depends, HTTPException, status
+from fastapi import FastAPI, Query, WebSocket, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
@@ -109,9 +109,9 @@ app.mount("/clips", StaticFiles(directory=CLIP_DIR), name="clips")
 
 @app.post("/auth/register")
 def register(
-    email: str,
-    password: str,
-    role: str = "home",
+    email: str = Query(..., description="User email"),
+    password: str = Query(..., description="Password"),
+    role: str = Query("home"),
     db: Session = Depends(get_db),
 ):
     db_user = db.query(User).filter(User.email == email).first()

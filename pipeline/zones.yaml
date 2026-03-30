@@ -9,6 +9,16 @@
 #     name: Counter behind line
 #     polygon: [[0, 0], [0.35, 0], [0.35, 0.45], [0, 0.45]]
 #     restricted: true
+#
+# --- Advanced (logic only, no ML) ---
+# schedule: optional — zone rules sirf in windows + days par chalenge (local TZ).
+#   timezone: Asia/Kolkata
+#   days: [sat, sun]          # optional; omit = har din
+#   windows: [{ start: "22:00", end: "06:00" }]   # overnight OK
+# loitering_min_persons: 2   # optional; default 1 — group loitering
+# hoa_vehicle_violation: true   # lawn/driveway — vehicle bbox center polygon mein
+# no_vehicles_in_zone: true      # alias
+# hoa_vehicle_labels: [car, motorcycle]   # optional subset; default = saari vehicle classes
 
 cameras:
   main:

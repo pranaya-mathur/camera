@@ -1,7 +1,9 @@
 fastapi
+httpx
 uvicorn[standard]
 sqlalchemy
 python-jose[cryptography]
 bcrypt
 python-multipart
 redis>=4.2
+pytest

@@ -105,6 +105,7 @@ rules_engine:
     - zone_intrusion
     - zone_crowd
     - zone_loitering
+    - hoa_vehicle_violation
     - vehicle_car
     - vehicle_truck
 
