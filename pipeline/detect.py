@@ -283,9 +283,16 @@ def process_frame(cid: bytes, img_bytes: bytes):
             flush=True,
         )
 
+    h, w = frame.shape[:2]
     r.publish(
         "detections",
-        json.dumps({"cam": cid_s, "detections": all_detections}),
+        json.dumps(
+            {
+                "cam": cid_s,
+                "frame": {"w": int(w), "h": int(h)},
+                "detections": all_detections,
+            }
+        ),
     )
     return (cid_s, len(all_detections))
 
@@ -345,18 +352,24 @@ def worker_loop():
         try:
             for frame, cid_s in zip(batch_frames, batch_cids):
                 all_detections = pipeline_from_frame(frame, cid_s)
-                if all_detections:
-                    if _log_detections:
-                        labs = [d["label"] for d in all_detections]
-                        print(
-                            f"[{datetime.now().strftime('%H:%M:%S')}] "
-                            f"detect cam={cid_s} → {labs}",
-                            flush=True,
-                        )
-                    r.publish(
-                        "detections",
-                        json.dumps({"cam": cid_s, "detections": all_detections}),
+                if all_detections and _log_detections:
+                    labs = [d["label"] for d in all_detections]
+                    print(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] "
+                        f"detect cam={cid_s} → {labs}",
+                        flush=True,
                     )
+                h, w = frame.shape[:2]
+                r.publish(
+                    "detections",
+                    json.dumps(
+                        {
+                            "cam": cid_s,
+                            "frame": {"w": int(w), "h": int(h)},
+                            "detections": all_detections,
+                        }
+                    ),
+                )
             _frames_done += len(batch_frames)
             if _frames_done % _LOG_EVERY == 0:
                 print(f"[*] worker {os.getpid()}: processed {_frames_done} frames", flush=True)

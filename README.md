@@ -1,6 +1,8 @@
 # SecureVu: AI Surveillance Prototype
 
-SecureVu is an experimental AI video analytics stack designed for research and testing. It provides an end-to-end pipeline for real-time camera ingestion, motion-gated multi-model detection (YOLO-World, Face, Fire/Smoke, License Plates), and intelligent alert dispatching with persistence and a modern dashboard.
+SecureVu is an experimental AI video analytics stack designed for research and testing. It provides an end-to-end pipeline for real-time camera ingestion, motion-gated multi-model detection (YOLO-World, Face, Fire/Smoke, License Plates), a **rules engine** (zones, crowd, loitering, vehicle policy, configurable open-vocab alerts, optional **webhooks**), and intelligent alert dispatching with persistence and a modern dashboard.
+
+For **future work and polish**, see [`ROADMAP.md`](ROADMAP.md).
 
 > [!IMPORTANT]
 > This system is currently in the **Prototype / Testing Phase**. It is NOT recommended for production deployment without extensive validation in your specific environment.
@@ -11,8 +13,11 @@ SecureVu is an experimental AI video analytics stack designed for research and t
 
 - **Experimental Multi-Worker Architecture**: Uses a parallel worker pool (`detect.py`) for high-throughput inference across multiple streams.
 - **Open-Vocabulary Cross-Verification**: Leverages YOLO-World to filter false positives (e.g., distinguishing lamps/sockets from actual fire).
+- **Rules engine** (`rules.py`): Fire/smoke priority, vehicle alerts with **allow/deny policy**, **custom open-vocab** substring rules, zone-based **intrusion / crowd / loitering** (see `pipeline/zones.yaml`).
+- **Webhooks**: Optional `WEBHOOK_URL` / `WEBHOOK_URLS` — each published alert is POSTed as JSON.
+- **Clips in the UI**: Saved MP4s under `storage/clips/` are served at **`/clips/...`**; `clip_buffer.py` emits a `clip_ready` alert with a link path for the dashboard.
 - **Infinite Alert History**: Persistent SQLite storage (`alerts.db`) for all detected events.
-- **NAS-Optimized Clip Storage**: Rolling 10-second buffer with automatic MP4 dump on alerts, ready for high-capacity storage testing.
+- **NAS-Optimized Clip Storage**: Rolling buffer with automatic MP4 dump on selected alert types (configurable via `rules_engine.clip_on_alert_types` in `detection_config.yaml`).
 - **Evaluation Framework**: Built-in scripts for measuring FPS, latency, and detection accuracy.
 
 ---
@@ -51,8 +56,10 @@ graph TD
         RE -- "Publish 'alerts'" --> R_A["Redis (alerts)"]
         
         R_A -- "Trigger" --> BE[Backend: FastAPI]
+        R_A -- "Webhook POST optional" --> WH[Customer URL]
         R_A -- "Save Clip Signal" --> CB
         CB -- "MP4 Dump" --> NAS[(storage/clips/)]
+        CB -- "clip_ready alert" --> R_A
         
         BE -- "History Store" --> DB[(SQLite: alerts.db)]
         BE -- "Notifications" --> NM[Telegram / Email]
@@ -92,9 +99,10 @@ Use the following tools to benchmark and verify the prototype against custom dat
 
 - **Alert History**: All alerts are automatically saved to a local SQLite database (`alerts.db`). History is preserved across restarts.
 - **NAS Clip Storage**:
-    - `clip_buffer.py` maintains a rolling 10-second in-memory buffer of high-quality frames.
-    - When an alert is triggered, the buffer is dumped as an MP4 file to `storage/clips/`.
-    - Easily mountable to 8-12TB NAS systems for long-term audit logs.
+    - `clip_buffer.py` maintains a rolling in-memory buffer of recent frames per camera.
+    - When `rules.py` publishes certain alert types (see `rules_engine.clip_on_alert_types` in `detection_config.yaml`), Redis `save_clip` triggers an MP4 dump to `CLIP_DIR` (default `storage/clips/`).
+    - After save, a **`clip_ready`** alert is published so the dashboard can show an **Open recording** link (`GET /clips/<filename>` via FastAPI `StaticFiles`).
+    - Mount the same directory on a NAS for long-term retention if needed.
 
 ---
 
@@ -159,8 +167,11 @@ Use the following tools to benchmark and verify the prototype against custom dat
 | `DEVICE` | auto: **CUDA** if available, else **MPS**, else **CPU** (`detect.py`) | Override: `cpu`, `mps`, `cuda` / `gpu`, `cuda:1`, or GPU index `0`, `1`, … |
 | `DETECT_LOG_DETECTIONS` | `1` (on) in `detect.py` | Print each non-empty **merged** detection list (time, camera id, all labels). Set `0` to disable. |
 | `DETECT_LOG_EVERY_N_FRAMES` | `20` in `detect.py` | How often workers log aggregate frame counts. |
+| `WEBHOOK_URL` | _(empty)_ | Single URL; `rules.py` POSTs JSON for each alert emitted. |
+| `WEBHOOK_URLS` | _(empty)_ | Comma-separated list of URLs (overrides single-URL usage if set). |
+| `ZONES_CONFIG` | `pipeline/zones.yaml` | Override path for zone definitions consumed by `rules.py`. |
 
-Other pipeline settings live in `pipeline/cameras.yaml` (sources) and `pipeline/detection_config.yaml` (thresholds and prompts).
+Other pipeline settings live in `pipeline/cameras.yaml` (sources), `pipeline/detection_config.yaml` (thresholds, prompts, rules engine), and `pipeline/zones.yaml` (ROI polygons).
 
 ## MacBook performance tuning (Apple Silicon)
 
@@ -180,8 +191,41 @@ Other pipeline settings live in `pipeline/cameras.yaml` (sources) and `pipeline/
 | `confidence.fire_verify` | `0.05` | Dedicated fire-model confidence threshold; increase (e.g. `0.45`) for stricter alerts / fewer false positives during tuning. |
 | `confidence.first_pass`, `fire_soft`, etc. | see file | YOLO-World and gating thresholds. |
 | `vehicles` | see file | Each entry gets its own Redis/UI alert type: `vehicle_car`, `vehicle_bus`, `vehicle_truck`, `vehicle_auto_rickshaw`, `vehicle_motorcycle`, `vehicle_scooter` (driven by `rules.py`). |
+| `yolo_world_classes` | see file | Open-vocabulary prompts for YOLO-World; extend with new lines for more objects (restart `detect.py`). |
+| `rules_engine` | see file | `alert_cooldown_seconds`, `enable_generic_person_feed`, `clip_on_alert_types` (which alerts trigger `save_clip`). |
+| `vehicle_policy` | `mode: all` | `deny_list` / `allow_list` with `deny` / `allow` label lists to filter vehicle alerts. |
+| `open_vocab_custom` | see file | Substring → `alert_type` + label for extra YOLO-World labels (processed in `rules.py` after fire/smoke). |
 
 `BATCH_SIZE` and `NUM_WORKERS` are **not** defined in this YAML; set them via environment variables for `detect.py`.
+
+---
+
+## Zone rules (`pipeline/zones.yaml`)
+
+Camera IDs must match keys in `pipeline/cameras.yaml`. Polygons use **normalized coordinates** \([0,1]\), origin top-left.
+
+Per zone you can set:
+
+| Field | Meaning |
+|-------|---------|
+| `polygon` | List of `[x, y]` points (at least three). |
+| `restricted` | If `true`, any **person** center inside the polygon raises `zone_intrusion` (subject to global cooldown). |
+| `crowd_max` | If **person** count in zone exceeds this integer, raises `zone_crowd`. |
+| `loitering_seconds` | If someone stays in zone at least this long (continuous presence), raises `zone_loitering` once cooldown allows. |
+
+Restart **`rules.py`** after editing zones or detection rule sections. Restart **`detect.py`** if you change `yolo_world_classes` or model thresholds.
+
+---
+
+## Detection messages (`detect.py` → Redis `detections`)
+
+Each message is JSON: `cam`, `frame` (`w`, `h`), and `detections` (each item may include `label`, `conf`, `box` as `xyxy` in **pixel** coordinates). The rules engine uses `frame` sizes to map boxes into normalized zone polygons.
+
+---
+
+## Dashboard (UI)
+
+The React dashboard loads cameras from `GET /cameras`, subscribes to `WebSocket /ws` for live alerts, and supports **alert type filter**, **camera search**, **severity** styling, and **Open recording** when an alert includes `clip` (e.g. `clip_ready`).
 
 ---
 

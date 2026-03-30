@@ -1,0 +1,35 @@
+# Zone rules — normalized polygon 0–1 (x,y), top-left origin.
+# Camera keys MUST match pipeline/cameras.yaml (currently: main).
+# Restart rules.py after edits.
+#
+# Sirf gate/counter jaise hissa monitor karna ho to polygon chhota karo, e.g. bottom half:
+#   polygon: [[0, 0.5], [1, 0.5], [1, 1], [0, 1]]
+# Restricted area (intrusion) example (comment copy karke uncomment karo):
+#   - id: staff_only
+#     name: Counter behind line
+#     polygon: [[0, 0], [0.35, 0], [0.35, 0.45], [0, 0.45]]
+#     restricted: true
+
+cameras:
+  main:
+    zones:
+      - id: full_scene
+        name: Full camera view
+        polygon:
+          - [0.0, 0.0]
+          - [1.0, 0.0]
+          - [1.0, 1.0]
+          - [0.0, 1.0]
+        restricted: false
+        crowd_max: 10
+        loitering_seconds: 90
+
+  # cameras.yaml mein jab naya camera add karo, yahan same id se zones banao:
+  # office:
+  #   zones:
+  #     - id: entrance
+  #       name: Office entrance
+  #       polygon: [[0.2, 0.3], [0.8, 0.3], [0.8, 1.0], [0.2, 1.0]]
+  #       restricted: false
+  #       crowd_max: 6
+  #       loitering_seconds: 60

@@ -89,3 +89,36 @@ yolo_world_classes:
   - bus
   - truck
   - license plate
+  # Add more prompts for open-vocab custom alerts (see open_vocab_custom below)
+  - suitcase
+  - wheelchair
+
+# --- Rules engine (rules.py) — restart rules.py after changes ---
+rules_engine:
+  # Global cooldown between two alerts with the same dedupe key (seconds)
+  alert_cooldown_seconds: 25
+  # If false, generic "person/face" intelligence_feed is suppressed unless zone rules apply
+  enable_generic_person_feed: false
+  # Save MP4 clip (via Redis save_clip) for these alert types
+  clip_on_alert_types:
+    - fire_hazard
+    - zone_intrusion
+    - zone_crowd
+    - zone_loitering
+    - vehicle_car
+    - vehicle_truck
+
+# Vehicle gating: which vehicle types may emit alerts
+vehicle_policy:
+  mode: all # all | deny_list | allow_list
+  deny: [] # e.g. [truck] when mode is deny_list
+  allow: [] # e.g. [car, motorcycle] when mode is allow_list
+
+# Extra substring matches on YOLO-World labels (after built-in handlers). Case-insensitive.
+open_vocab_custom:
+  - match: backpack
+    alert_type: object_watch
+    label: "Backpack / bag watch"
+  - match: suitcase
+    alert_type: object_watch
+    label: "Suitcase detected"

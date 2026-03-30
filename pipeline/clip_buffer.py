@@ -1,3 +1,4 @@
+import json
 import os
 import cv2
 import numpy as np
@@ -5,6 +6,7 @@ import redis
 from collections import deque
 import threading
 import time
+from datetime import datetime, timezone
 
 r = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=6379)
 sub = r.pubsub()
@@ -15,7 +17,11 @@ sub.subscribe("frames")
 buffer = {}
 buffer_lock = threading.Lock()
 
-CLIP_DIR = os.getenv("CLIP_DIR", "storage/clips")
+_PIPELINE_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_PIPELINE_DIR)
+CLIP_DIR = os.getenv(
+    "CLIP_DIR", os.path.join(_REPO_ROOT, "storage", "clips")
+)
 os.makedirs(CLIP_DIR, exist_ok=True)
 
 def save_clip_worker():
@@ -48,7 +54,26 @@ def save_clip_worker():
                 out.write(f)
             out.release()
             print(f"[+] Saved alert clip: {filename}")
-            
+            basename = os.path.basename(filename)
+            try:
+                r.publish(
+                    "alerts",
+                    json.dumps(
+                        {
+                            "type": "clip_ready",
+                            "cam": cam_id,
+                            "cid": cam_id,
+                            "label": f"Recording saved: {basename}",
+                            "severity": "info",
+                            "clip": f"/clips/{basename}",
+                            "clip_file": basename,
+                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        }
+                    ),
+                )
+            except Exception as ex:
+                print(f"[!] clip_ready publish: {ex}")
+
         except Exception as e:
             print(f"[!] Clip saving error: {e}")
 

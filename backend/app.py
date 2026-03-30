@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
@@ -99,6 +100,11 @@ app.add_middleware(
 )
 
 init_db()
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CLIP_DIR = os.getenv("CLIP_DIR", os.path.join(_REPO_ROOT, "storage", "clips"))
+os.makedirs(CLIP_DIR, exist_ok=True)
+app.mount("/clips", StaticFiles(directory=CLIP_DIR), name="clips")
 
 
 @app.post("/auth/register")
