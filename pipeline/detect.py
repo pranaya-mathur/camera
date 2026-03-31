@@ -12,6 +12,7 @@ from detection_settings import (
     box_conf,
     label_matches_fire_keyword,
     load_config,
+    calculate_iou,
 )
 from models.loader import ModelLoader
 from backend.notify import notifier
@@ -251,6 +252,53 @@ def _run_lpd(frame, all_detections, cid: str):
     notifier.notify("VEHICLE", cid, "Vehicle and Plate detected")
 
 
+def _suppress_false_positives(all_detections):
+    fp_cfg = CFG.get("fp_suppression")
+    if not fp_cfg or not fp_cfg.get("enabled"):
+        return
+
+    iou_thresh = fp_cfg.get("iou_threshold", 0.3)
+    suppress_labels = {s.lower() for s in fp_cfg.get("suppress_labels", [])}
+
+    # 1. Identify FP sources from the first pass (YOLO-World)
+    fp_sources = [
+        d for d in all_detections
+        if d.get("label", "").lower() in suppress_labels
+    ]
+
+    if not fp_sources:
+        return
+
+    # 2. Check fire/smoke detections for overlap
+    to_suppress = []
+    for i, d in enumerate(all_detections):
+        if not label_matches_fire_keyword(d.get("label", ""), FIRE_KW):
+            continue
+
+        fire_box = d.get("box")
+        if not fire_box:
+            continue
+
+        for src in fp_sources:
+            src_box = src.get("box")
+            if not src_box:
+                continue
+
+            iou = calculate_iou(fire_box, src_box)
+            if iou > iou_thresh:
+                print(
+                    f"[*] Smart Filtering: Suppressing {d['label']} due to overlap with {src['label']} (IoU={iou:.2f})",
+                    flush=True
+                )
+                to_suppress.append(i)
+                break
+
+    # 3. Mark or remove suppressed detections
+    # We'll tag them so rules.py can decide, but also for logging
+    for idx in to_suppress:
+        all_detections[idx]["suppressed"] = True
+
+
 def pipeline_from_frame(frame, cid_s: str):
     """Full detection stack: YOLO-World + face + LPD first pass, then fire verify, then vehicle LPD."""
     all_detections = []
@@ -264,6 +312,9 @@ def pipeline_from_frame(frame, cid_s: str):
 
     if _has_vehicle(all_detections):
         _run_lpd(frame, all_detections, cid_s)
+
+    # NEW: Smart Filtering / FP Suppression
+    _suppress_false_positives(all_detections)
 
     return all_detections
 

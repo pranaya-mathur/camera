@@ -92,6 +92,12 @@ yolo_world_classes:
   # Add more prompts for open-vocab custom alerts (see open_vocab_custom below)
   - suitcase
   - wheelchair
+  - lamp
+  - socket
+  - light bulb
+  - bulb
+  - sunlight glare
+  - window glare
 
 # --- Rules engine (rules.py) — restart rules.py after changes ---
 rules_engine:
@@ -108,6 +114,19 @@ rules_engine:
     - hoa_vehicle_violation
     - vehicle_car
     - vehicle_truck
+
+# False Positive Suppression (Smart Filtering)
+# Avoid fire/smoke alerts when the detection overlaps with these objects.
+fp_suppression:
+  enabled: true
+  iou_threshold: 0.3
+  suppress_labels:
+    - lamp
+    - socket
+    - light bulb
+    - bulb
+    - sunlight glare
+    - window glare
 
 # Vehicle gating: which vehicle types may emit alerts
 vehicle_policy:

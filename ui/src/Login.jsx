@@ -10,11 +10,13 @@ export default function Login({ onLogin }) {
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
-      const formData = new FormData();
-      formData.append('username', email);
-      formData.append('password', password);
-      
-      const resp = await axios.post(`${API_BASE}/auth/login`, formData);
+      // OAuth2 password flow expects application/x-www-form-urlencoded (not multipart FormData).
+      const body = new URLSearchParams();
+      body.set('username', email);
+      body.set('password', password);
+      const resp = await axios.post(`${API_BASE}/auth/login`, body, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
       localStorage.setItem('token', resp.data.access_token);
       localStorage.setItem('role', resp.data.role);
       onLogin();

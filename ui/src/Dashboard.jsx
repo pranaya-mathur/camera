@@ -40,10 +40,23 @@ export default function Dashboard({ userRole, onLogout }) {
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      setAlerts((prev) => [data, ...prev].slice(0, 50));
+      try {
+        const data = JSON.parse(e.data);
+        setAlerts((prev) => [data, ...prev].slice(0, 50));
+      } catch {
+        /* ignore non-JSON */
+      }
     };
-    return () => ws.close();
+    ws.onerror = () => {
+      console.warn('[SecureVU] WebSocket error — is the backend running on :8000?');
+    };
+    return () => {
+      try {
+        ws.close();
+      } catch {
+        /* noop */
+      }
+    };
   }, []);
 
   const typeOptions = useMemo(() => {

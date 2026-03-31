@@ -332,6 +332,10 @@ def _rules_main_loop() -> None:
             label = raw_label.lower()
             cls_id = d.get("cls", -1)
 
+            if d.get("suppressed"):
+                # Skip alerts for detections suppressed by Smart Filtering
+                continue
+
             if _fire_smoke_match(label):
                 _publish_alert(
                     alert_type="fire_hazard",

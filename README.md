@@ -152,6 +152,7 @@ Use the following tools to benchmark and verify the prototype against custom dat
    curl -X POST "http://127.0.0.1:8000/auth/register?email=you@example.com&password=yourpass&role=admin"
    cd ui && npm install && npm run dev
    ```
+   Keep the **API on `127.0.0.1:8000`** while using `npm run dev`: the UI proxies `/api-backend` → that server (login, alerts, cameras, video, WebSocket). If the backend is stopped or on another port, the dashboard will look broken (no feed / no live alerts).
 
 ### Automated verification (configs + API + rules import)
 
