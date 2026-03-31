@@ -12,6 +12,12 @@
 # You can also leave `main` as-is and set env `BASIC_MAIN_CAMERA`
 # before running `run_basic_suite.py`.
 cameras:
-  main: "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=0"
+  main:
+    stream_url: "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=0"
+    onvif:
+      url: "http://CAMERA_IP:8899/onvif/device_service"
+      username: "USERNAME"
+      password: "PASSWORD"
   # office: rtsp://192.168.1.100/stream1
   # gate: rtsp://192.168.1.101/stream1
+

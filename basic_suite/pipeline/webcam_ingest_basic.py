@@ -43,17 +43,27 @@ def main():
     for cid, src in CAMS.items():
         if src is None:
             continue
-        key = (type(src).__name__, str(src))
+        # Support both old string and new dict format
+        if isinstance(src, dict):
+            src_val = src.get("stream_url", "")
+        else:
+            src_val = src
+        
+        if not src_val:
+            continue
+
+        key = (type(src_val).__name__, str(src_val))
         if key in seen_sources:
-            print(f"[!] Skipping duplicate source {src!r} for '{cid}'")
+            print(f"[!] Skipping duplicate source {src_val!r} for '{cid}'")
             continue
         seen_sources.add(key)
 
-        cap = open_capture(src)
+        cap = open_capture(src_val)
         if not cap.isOpened():
-            print(f"[!] Skipping '{cid}': cannot open source {src!r}")
+            print(f"[!] Skipping '{cid}': cannot open source {src_val!r}")
             continue
         caps[cid] = cap
+
 
     if not caps:
         print(f"[!] No working sources in {_CFG}")

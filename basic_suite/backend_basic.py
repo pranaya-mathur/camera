@@ -17,6 +17,12 @@ import redis.asyncio as redis_async
 import yaml
 from sqlalchemy.orm import Session
 
+# NEW: ONVIF support
+try:
+    from onvif import ONVIFCamera
+except ImportError:
+    ONVIFCamera = None
+
 from backend.db import User, get_db, init_db
 from backend.auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -114,6 +120,61 @@ def _allowed_cameras(user: User) -> List[str]:
     if "*" in allow:
         return cams
     return [c for c in cams if c in allow]
+
+
+# PTZ Manager Logic
+class PTZManager:
+    _connections = {}
+
+    @classmethod
+    async def get_camera(cls, cam_id: str, config: dict):
+        if not ONVIFCamera:
+            return None
+        if cam_id in cls._connections:
+            return cls._connections[cam_id]
+        
+        onvif_cfg = config.get("onvif")
+        if not onvif_cfg:
+            return None
+        
+        try:
+            # Note: synchronous call, wrapping if possible
+            cam = ONVIFCamera(
+                onvif_cfg["url"].split("//")[-1].split(":")[0], # host
+                int(onvif_cfg["url"].split(":")[-1].split("/")[0]), # port
+                onvif_cfg["username"],
+                onvif_cfg["password"],
+                # Directory to hold WSDLs if needed, or None
+            )
+            cls._connections[cam_id] = cam
+            return cam
+        except Exception as e:
+            print(f"[!] PTZ connection failed for {cam_id}: {e}")
+            return None
+
+    @classmethod
+    async def move(cls, cam: Any, x: float, y: float, zoom: float = 0):
+        try:
+            ptz = cam.create_ptz_service()
+            media = cam.create_media_service()
+            profile = media.GetProfiles()[0]
+            
+            request = ptz.create_type("ContinuousMove")
+            request.ProfileToken = profile.token
+            status = ptz.GetStatus({"ProfileToken": profile.token})
+            
+            # Simple continuous move logic
+            request.Velocity = status.Position
+            request.Velocity.PanTilt.x = x
+            request.Velocity.PanTilt.y = y
+            if hasattr(request.Velocity, "Zoom") and zoom != 0:
+                request.Velocity.Zoom.x = zoom
+            
+            ptz.ContinuousMove(request)
+            await asyncio.sleep(0.5) # Move for half second
+            ptz.Stop({"ProfileToken": profile.token, "PanTilt": True, "Zoom": True})
+        except Exception as e:
+            print(f"[!] PTZ move error: {e}")
 
 
 embed_tokens: Dict[str, Dict[str, Any]] = {}
@@ -258,6 +319,7 @@ def control_plane_status(current_user: User = Depends(_require_perm("view_alerts
         "alerts_buffered": len(alerts),
         "rbac_config": str(RBAC_CFG_PATH),
         "plans_config": str(PLANS_CFG_PATH),
+        "privacy_mode": os.getenv("PRIVACY_MODE", "0") == "1",
     }
 
 
@@ -268,8 +330,46 @@ def control_plane_cameras(current_user: User = Depends(_require_perm("view_strea
     out = []
     for cid in cams.keys():
         if cid in allowed:
-            out.append({"id": cid, "name": cid.capitalize()})
+            name = cid.capitalize()
+            has_ptz = isinstance(cams[cid], dict) and "onvif" in cams[cid]
+            out.append({"id": cid, "name": name, "has_ptz": has_ptz})
     return {"cameras": out}
+
+
+@app.post("/cameras/{cam_id}/ptz")
+async def ptz_control(
+    cam_id: str,
+    action: str = Query(..., regex="^(UP|DOWN|LEFT|RIGHT|ZOOM_IN|ZOOM_OUT|STOP)$"),
+    current_user: User = Depends(_require_perm("view_streams")),
+):
+    if cam_id not in _allowed_cameras(current_user):
+        raise HTTPException(status_code=403, detail="Camera not allowed")
+    
+    cams = _load_cameras()
+    cam_cfg = cams.get(cam_id)
+    if not isinstance(cam_cfg, dict) or "onvif" not in cam_cfg:
+        raise HTTPException(status_code=400, detail="PTZ not configured for this camera")
+    
+    cam_obj = await PTZManager.get_camera(cam_id, cam_cfg)
+    if not cam_obj:
+        raise HTTPException(status_code=500, detail="Could not connect to ONVIF camera")
+    
+    # Map actions to vectors
+    x, y, z = 0, 0, 0
+    if action == "UP": y = 1
+    elif action == "DOWN": y = -1
+    elif action == "LEFT": x = -1
+    elif action == "RIGHT": x = 1
+    elif action == "ZOOM_IN": z = 1
+    elif action == "ZOOM_OUT": z = -1
+    
+    if action == "STOP":
+        # Handled in move call sleep logic usually, but here we can force stop
+        pass
+    else:
+        await PTZManager.move(cam_obj, x, y, z)
+    
+    return {"status": "ok", "action": action}
 
 
 @app.post("/embed/token")
@@ -363,7 +463,8 @@ def get_cameras(current_user: User = Depends(_require_perm("view_streams"))):
     allowed = set(_allowed_cameras(current_user))
     return {
         "cameras": [
-            {"id": cid, "name": cid.capitalize()} for cid in cams.keys() if cid in allowed
+            {"id": cid, "name": cid.capitalize(), "has_ptz": isinstance(cams[cid], dict) and "onvif" in cams[cid]} 
+            for cid in cams.keys() if cid in allowed
         ]
     }
 
@@ -420,3 +521,4 @@ async def ws(ws: WebSocket):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "basic_suite_backend"}
+

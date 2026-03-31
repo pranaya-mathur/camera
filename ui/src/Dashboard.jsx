@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Camera, Bell, Shield, LogOut, Search, Settings, AlertTriangle, Film, ExternalLink } from 'lucide-react';
+import { Camera, Bell, Shield, LogOut, Search, Settings, AlertTriangle, Film, ExternalLink, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE, WS_URL } from './config';
 
@@ -18,12 +18,20 @@ export default function Dashboard({ userRole, onLogout }) {
   const [cameras, setCameras] = useState([]);
   const [typeFilter, setTypeFilter] = useState('all');
   const [searchCam, setSearchCam] = useState('');
+  const [privacyMode, setPrivacyMode] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/cameras`)
       .then((r) => r.json())
       .then((d) => setCameras(d.cameras || []))
       .catch(() => setCameras([{ id: 'main', name: 'Main Camera' }]));
+
+    fetch(`${API_BASE}/control-plane/status`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+      .then(r => r.json())
+      .then(d => setPrivacyMode(d.privacy_mode))
+      .catch(() => {});
 
     const token = localStorage.getItem('token');
     if (token) {
@@ -36,6 +44,17 @@ export default function Dashboard({ userRole, onLogout }) {
         .catch(() => {});
     }
   }, []);
+
+  const handlePTZ = async (camId, action) => {
+    try {
+      await fetch(`${API_BASE}/cameras/${camId}/ptz?action=${action}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      });
+    } catch (e) {
+      console.error("PTZ error", e);
+    }
+  };
 
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
@@ -123,8 +142,13 @@ export default function Dashboard({ userRole, onLogout }) {
         >
           <div>
             <h1 style={{ fontSize: 20 }}>SecureVU Command Center</h1>
-            <p style={{ fontSize: 13, color: '#9ca3af' }}>
+            <p style={{ fontSize: 13, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 8 }}>
               Role: <span style={{ color: '#3b82f6' }}>{userRole.toUpperCase()}</span>
+              {privacyMode && (
+                <span style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: 4, marginLeft: 12, fontSize: 11, background: 'rgba(239, 68, 68, 0.1)', padding: '2px 8px', borderRadius: 12 }}>
+                  <EyeOff size={14} /> Privacy Active
+                </span>
+              )}
             </p>
           </div>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -196,9 +220,29 @@ export default function Dashboard({ userRole, onLogout }) {
                 }}
               >
                 <p style={{ fontSize: 12, fontWeight: 600 }}>
-                  [CAM {idx + 1}] {cam.name}
+                  [CAM] {cam.name}
                 </p>
               </div>
+
+              {cam.has_ptz && (
+                <div style={{ position: 'absolute', bottom: 12, right: 12, zIndex: 20, display: 'flex', flexDirection: 'column', gap: 4, background: 'rgba(0,0,0,0.4)', padding: 8, borderRadius: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <ChevronUp size={20} cursor="pointer" onClick={() => handlePTZ(cam.id, 'UP')} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <ChevronLeft size={20} cursor="pointer" onClick={() => handlePTZ(cam.id, 'LEFT')} />
+                    <ChevronRight size={20} cursor="pointer" onClick={() => handlePTZ(cam.id, 'RIGHT')} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <ChevronDown size={20} cursor="pointer" onClick={() => handlePTZ(cam.id, 'DOWN')} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 12, marginTop: 4, borderTop: '1px solid #555', paddingTop: 4 }}>
+                    <ZoomIn size={18} cursor="pointer" onClick={() => handlePTZ(cam.id, 'ZOOM_IN')} />
+                    <ZoomOut size={18} cursor="pointer" onClick={() => handlePTZ(cam.id, 'ZOOM_OUT')} />
+                  </div>
+                </div>
+              )}
+
               <div
                 style={{
                   height: '100%',
@@ -223,9 +267,11 @@ export default function Dashboard({ userRole, onLogout }) {
                   onError={() => {}}
                 />
                 <Camera size={48} color="#1f2937" />
-                <p style={{ position: 'absolute', fontSize: 10, color: '#4b5563', bottom: 12 }}>
-                  Live feed
-                </p>
+                {privacyMode && (
+                  <div style={{ position: 'absolute', zIndex: 5, padding: '8px 16px', background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', borderRadius: 8, fontSize: 10, color: '#9ca3af' }}>
+                    Privacy Filter Engaged
+                  </div>
+                )}
               </div>
             </motion.div>
           ))}
