@@ -1,0 +1,48 @@
+# Basic feature profiles inspired by the external link use-cases.
+# These are config overlays for lightweight operation in this repo.
+
+profiles:
+  ad_hoc_surveillance:
+    description: Fast setup with motion + intrusion + clips
+    motion_diff_threshold: 4.0
+    rules_overrides:
+      rules_engine:
+        alert_cooldown_seconds: 15
+      vehicle_policy:
+        mode: all
+
+  home_monitoring:
+    description: Balanced home profile with loitering and zone rules
+    motion_diff_threshold: 3.0
+    rules_overrides:
+      rules_engine:
+        alert_cooldown_seconds: 30
+
+  business_facility_security:
+    description: Stricter cooldown and crowd checks
+    motion_diff_threshold: 2.5
+    rules_overrides:
+      rules_engine:
+        alert_cooldown_seconds: 20
+
+  perimeter_unauthorized_access:
+    description: Restriction-first profile
+    motion_diff_threshold: 2.0
+    rules_overrides:
+      rules_engine:
+        alert_cooldown_seconds: 10
+
+  pet_monitoring:
+    description: Animal alerts emphasized
+    motion_diff_threshold: 3.5
+    rules_overrides:
+      rules_engine:
+        alert_cooldown_seconds: 25
+
+  website_streaming:
+    description: Streaming focused, fewer rule alerts
+    motion_diff_threshold: 5.0
+    rules_overrides:
+      rules_engine:
+        enable_generic_person_feed: false
+        alert_cooldown_seconds: 45

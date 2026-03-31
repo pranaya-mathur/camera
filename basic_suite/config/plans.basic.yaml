@@ -1,0 +1,16 @@
+plans:
+  free:
+    max_cameras: 1
+    features: [dashboard, alerts, clips, zones_basic, webhook]
+  basic:
+    max_cameras: 4
+    features: [dashboard, alerts, clips, zones_basic, webhook, embed_stream, remote_console]
+  pro:
+    max_cameras: 16
+    features: [dashboard, alerts, clips, zones_basic, webhook, embed_stream, remote_console, iot_bridge, scada_bridge, gamepad_bridge, reports]
+
+role_default_plan:
+  viewer: free
+  operator: basic
+  manager: pro
+  admin: pro

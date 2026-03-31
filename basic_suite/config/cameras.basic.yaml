@@ -1,0 +1,17 @@
+# Isolated camera config for basic_suite
+#
+# CP E25A recommended RTSP templates (try in this order):
+# 1) rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=0
+# 2) rtsp://USERNAME:PASSWORD@CAMERA_IP:554/Streaming/Channels/101
+# 3) rtsp://USERNAME:PASSWORD@CAMERA_IP:554/live/ch00_0
+#
+# Note:
+# - Keep stream codec as H.264 in camera settings.
+# - If password has special chars, URL-encode it.
+#
+# You can also leave `main` as-is and set env `BASIC_MAIN_CAMERA`
+# before running `run_basic_suite.py`.
+cameras:
+  main: "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=0"
+  # office: rtsp://192.168.1.100/stream1
+  # gate: rtsp://192.168.1.101/stream1

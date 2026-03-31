@@ -1,0 +1,43 @@
+# Basic suite zones (normalized coordinates 0..1)
+
+cameras:
+  main:
+    zones:
+      - id: full_scene
+        name: Full camera view
+        polygon:
+          - [0.0, 0.0]
+          - [1.0, 0.0]
+          - [1.0, 1.0]
+          - [0.0, 1.0]
+        restricted: false
+        crowd_max: 10
+        loitering_seconds: 90
+        loitering_min_persons: 1
+
+      - id: perimeter_top
+        name: Perimeter top strip
+        polygon:
+          - [0.0, 0.0]
+          - [1.0, 0.0]
+          - [1.0, 0.18]
+          - [0.0, 0.18]
+        restricted: true
+        schedule:
+          timezone: Asia/Kolkata
+          windows:
+            - start: "22:00"
+              end: "06:00"
+
+      - id: driveway
+        name: Driveway no-vehicle zone
+        polygon:
+          - [0.0, 0.70]
+          - [1.0, 0.70]
+          - [1.0, 1.0]
+          - [0.0, 1.0]
+        hoa_vehicle_violation: true
+        hoa_vehicle_labels:
+          - car
+          - motorcycle
+          - scooter

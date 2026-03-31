@@ -1,0 +1,19 @@
+roles:
+  viewer:
+    permissions: [view_streams, view_alerts]
+    camera_allow: ["*"]
+  operator:
+    permissions: [view_streams, view_alerts, acknowledge_alerts, control_ptz]
+    camera_allow: ["*"]
+  manager:
+    permissions: [view_streams, view_alerts, acknowledge_alerts, edit_rules, control_ptz, export_reports]
+    camera_allow: ["*"]
+  admin:
+    permissions: ["*"]
+    camera_allow: ["*"]
+
+role_alias:
+  public: viewer
+  home: operator
+  company: manager
+  admin: admin
