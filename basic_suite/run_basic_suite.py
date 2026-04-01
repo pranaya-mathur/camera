@@ -116,14 +116,23 @@ def main() -> int:
         run(f"{py} pipeline/clip_buffer.py", env, "Clip Buffer", procs)
         run(f"{py} basic_suite/pipeline/webcam_ingest_basic.py", env, "Basic Ingest", procs)
 
-        print("\n[!] basic_suite running. Ctrl+C to stop all.\n")
+        print("\n[!] basic_suite running. Monitoring process health...\n")
+        
         while True:
-            time.sleep(1)
+            time.sleep(2)
+            for p in procs:
+                if p.poll() is not None:
+                    print(f"\n[!] CRITICAL: A process has exited with code {p.returncode}. Shutting down suite.")
+                    raise KeyboardInterrupt
     except KeyboardInterrupt:
         print("\n[!] Stopping basic_suite...")
         for p in procs:
             try:
-                p.send_signal(signal.SIGTERM)
+                # Use SIGINT first for graceful shutdown, then SIGTERM
+                p.send_signal(signal.SIGINT)
+                time.sleep(0.5)
+                if p.poll() is None:
+                    p.terminate()
             except Exception:
                 pass
         return 0

@@ -10,3 +10,4 @@ uvicorn[standard]
 redis
 boto3
 websockets
+onvif-zeep
