@@ -1,7 +1,9 @@
 # Basic suite zones (normalized coordinates 0..1)
+# Camera IDs must match ingest keys: cam1–cam4 from YAML, plus `main` when using
+# BASIC_MAIN_CAMERA / --use-webcam (webcam_ingest_basic uses cid "main").
 
 cameras:
-  main:
+  cam1: &default_zones
     zones:
       - id: full_scene
         name: Full camera view
@@ -41,3 +43,8 @@ cameras:
           - car
           - motorcycle
           - scooter
+
+  main: *default_zones
+  cam2: *default_zones
+  cam3: *default_zones
+  cam4: *default_zones

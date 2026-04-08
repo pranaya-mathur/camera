@@ -1,23 +1,14 @@
 # Isolated camera config for basic_suite
 #
-# CP E25A recommended RTSP templates (try in this order):
-# 1) rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=0
-# 2) rtsp://USERNAME:PASSWORD@CAMERA_IP:554/Streaming/Channels/101
-# 3) rtsp://USERNAME:PASSWORD@CAMERA_IP:554/live/ch00_0
+# H.264 recommended. URL-encode special characters in passwords.
+# Optional: env BASIC_MAIN_CAMERA overrides only `main` if you still use that key.
 #
-# Note:
-# - Keep stream codec as H.264 in camera settings.
-# - If password has special chars, URL-encode it.
-#
-# You can also leave `main` as-is and set env `BASIC_MAIN_CAMERA`
-# before running `run_basic_suite.py`.
 cameras:
-  main:
-    stream_url: "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=0"
-    onvif:
-      url: "http://CAMERA_IP:8899/onvif/device_service"
-      username: "USERNAME"
-      password: "PASSWORD"
-  # office: rtsp://192.168.1.100/stream1
-  # gate: rtsp://192.168.1.101/stream1
-
+  cam1:
+    stream_url: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=1&subtype=0"
+  cam2:
+    stream_url: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=2&subtype=0"
+  cam3:
+    stream_url: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=3&subtype=0"
+  cam4:
+    stream_url: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=4&subtype=0"

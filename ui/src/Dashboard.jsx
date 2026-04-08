@@ -19,31 +19,84 @@ export default function Dashboard({ userRole, onLogout }) {
   const [typeFilter, setTypeFilter] = useState('all');
   const [searchCam, setSearchCam] = useState('');
   const [privacyMode, setPrivacyMode] = useState(false);
+  const [clipPlayError, setClipPlayError] = useState({});
+  /** When false, customer-style roles do not get MJPEG (basic_suite default: internal mode). */
+  const [liveFeedForUser, setLiveFeedForUser] = useState(true);
+  /** Operators see MP4 clip links; viewers get snapshots only. */
+  const [clipMediaForUser, setClipMediaForUser] = useState(false);
+  const accessToken = localStorage.getItem('token') || '';
 
   useEffect(() => {
-    fetch(`${API_BASE}/cameras`)
-      .then((r) => r.json())
-      .then((d) => setCameras(d.cameras || []))
-      .catch(() => setCameras([{ id: 'main', name: 'Main Camera' }]));
-
-    fetch(`${API_BASE}/control-plane/status`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-    })
-      .then(r => r.json())
-      .then(d => setPrivacyMode(d.privacy_mode))
-      .catch(() => {});
-
+    let cancelled = false;
     const token = localStorage.getItem('token');
-    if (token) {
-      fetch(`${API_BASE}/alerts`, { headers: { Authorization: `Bearer ${token}` } })
-        .then((r) => (r.ok ? r.json() : Promise.reject()))
-        .then((d) => {
-          const list = d.alerts || [];
-          setAlerts([...list].reverse().slice(0, 50));
-        })
-        .catch(() => {});
+    if (!token) {
+      onLogout();
+      return;
     }
-  }, []);
+    const auth = { Authorization: `Bearer ${token}` };
+
+    (async () => {
+      try {
+        const rc = await fetch(`${API_BASE}/cameras`, { headers: auth });
+        if (rc.status === 401) {
+          onLogout();
+          return;
+        }
+        if (rc.ok) {
+          const d = await rc.json();
+          const list = d.cameras || [];
+          // Always show at least one tile so MJPEG + layout work if API returns [].
+          if (!cancelled) {
+            setCameras(
+              list.length > 0 ? list : [{ id: 'main', name: 'Main Camera' }],
+            );
+          }
+        } else if (!cancelled) {
+          setCameras([{ id: 'main', name: 'Main Camera' }]);
+        }
+
+        const rs = await fetch(`${API_BASE}/control-plane/status`, { headers: auth });
+        if (rs.status === 401) {
+          onLogout();
+          return;
+        }
+        if (rs.ok) {
+          const sd = await rs.json();
+          if (!cancelled) setPrivacyMode(!!sd.privacy_mode);
+        }
+
+        const ren = await fetch(`${API_BASE}/entitlements`, { headers: auth });
+        if (ren.ok) {
+          const en = await ren.json();
+          if (!cancelled && typeof en.live_feed_for_user === 'boolean') {
+            setLiveFeedForUser(en.live_feed_for_user);
+          }
+          if (!cancelled && typeof en.clip_media_for_user === 'boolean') {
+            setClipMediaForUser(en.clip_media_for_user);
+          }
+        }
+
+        const ra = await fetch(`${API_BASE}/alerts`, { headers: auth });
+        if (ra.status === 401) {
+          onLogout();
+          return;
+        }
+        if (ra.ok) {
+          const ad = await ra.json();
+          const list = ad.alerts || [];
+          if (!cancelled) setAlerts([...list].reverse().slice(0, 50));
+        }
+      } catch {
+        if (!cancelled && localStorage.getItem('token')) {
+          setCameras([{ id: 'main', name: 'Main Camera' }]);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onLogout]);
 
   const handlePTZ = async (camId, action) => {
     try {
@@ -57,7 +110,9 @@ export default function Dashboard({ userRole, onLogout }) {
   };
 
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
+    const tok = localStorage.getItem('token');
+    const wsUrl = tok ? `${WS_URL}?token=${encodeURIComponent(tok)}` : WS_URL;
+    const ws = new WebSocket(wsUrl);
     ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
@@ -253,19 +308,36 @@ export default function Dashboard({ userRole, onLogout }) {
                   justifyContent: 'center',
                 }}
               >
-                <img
-                  src={`${API_BASE}/video/${cam.id}`}
-                  alt={cam.name}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover',
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                  }}
-                  onError={() => {}}
-                />
+                {liveFeedForUser && accessToken && cam.id ? (
+                  <img
+                    src={`${API_BASE}/video/${encodeURIComponent(cam.id)}?token=${encodeURIComponent(accessToken)}`}
+                    alt={cam.name}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                    }}
+                    onError={() => {}}
+                  />
+                ) : (
+                  <p
+                    style={{
+                      position: 'absolute',
+                      zIndex: 2,
+                      padding: '12px 16px',
+                      fontSize: 12,
+                      color: '#9ca3af',
+                      textAlign: 'center',
+                      maxWidth: '90%',
+                    }}
+                  >
+                    Live video is not available for your role (alerts only). Operators use admin /
+                    manager / operator accounts for preview when enabled.
+                  </p>
+                )}
                 <Camera size={48} color="#1f2937" />
                 {privacyMode && (
                   <div style={{ position: 'absolute', zIndex: 5, padding: '8px 16px', background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', borderRadius: 8, fontSize: 10, color: '#9ca3af' }}>
@@ -290,7 +362,7 @@ export default function Dashboard({ userRole, onLogout }) {
         <div style={{ padding: 24, paddingBottom: 16, borderBottom: '1px solid #333' }}>
           <h3 style={{ fontSize: 16 }}>Live Intelligence Feed</h3>
           <p style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
-            {filteredAlerts.length} shown · hazard · zones · vehicles · open-vocab · clips
+            {filteredAlerts.length} shown · hazard · zones · vehicles · snapshots / clips
           </p>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
@@ -348,23 +420,85 @@ export default function Dashboard({ userRole, onLogout }) {
                             Zone: {alert.zone_name}
                           </p>
                         ) : null}
-                        {alert.clip ? (
-                          <a
-                            href={`${API_BASE}${alert.clip}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              fontSize: 12,
-                              color: '#60a5fa',
-                              marginTop: 8,
-                            }}
-                          >
-                            <ExternalLink size={14} />
-                            Open recording
-                          </a>
+                        {alert.image && accessToken ? (
+                          <>
+                            <img
+                              src={`${API_BASE}${alert.image}?token=${encodeURIComponent(accessToken)}`}
+                              alt="Alert snapshot"
+                              style={{
+                                width: '100%',
+                                maxHeight: 240,
+                                marginTop: 10,
+                                borderRadius: 8,
+                                objectFit: 'contain',
+                                background: '#111',
+                              }}
+                            />
+                            <a
+                              href={`${API_BASE}${alert.image}?token=${encodeURIComponent(accessToken)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                fontSize: 12,
+                                color: '#60a5fa',
+                                marginTop: 8,
+                              }}
+                            >
+                              <ExternalLink size={14} />
+                              Download snapshot
+                            </a>
+                          </>
+                        ) : null}
+                        {alert.clip && clipMediaForUser && accessToken ? (
+                          <>
+                            <video
+                              controls
+                              playsInline
+                              preload="metadata"
+                              src={`${API_BASE}${alert.clip}?token=${encodeURIComponent(accessToken)}`}
+                              onError={() =>
+                                setClipPlayError((p) => ({
+                                  ...p,
+                                  [`${alert.ts}-${i}`]: true,
+                                }))
+                              }
+                              style={{
+                                width: '100%',
+                                maxHeight: 220,
+                                marginTop: 10,
+                                borderRadius: 8,
+                                background: '#000',
+                              }}
+                            />
+                            {clipPlayError[`${alert.ts}-${i}`] ? (
+                              <p style={{ fontSize: 11, color: '#fbbf24', marginTop: 6 }}>
+                                Browser could not decode this clip (common on Safari with OpenCV mp4v).
+                                Install <code style={{ color: '#e5e7eb' }}>ffmpeg</code> and restart the
+                                suite so clips are saved as H.264, or try Chrome — or use download below.
+                              </p>
+                            ) : null}
+                            <a
+                              href={`${API_BASE}${alert.clip}?token=${encodeURIComponent(accessToken)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                fontSize: 12,
+                                color: '#60a5fa',
+                                marginTop: 8,
+                              }}
+                            >
+                              <ExternalLink size={14} />
+                              Open / download recording
+                            </a>
+                          </>
                         ) : null}
                       </div>
                     </div>

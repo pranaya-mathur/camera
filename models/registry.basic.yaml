@@ -1,0 +1,11 @@
+# Basic_suite default: YOLO-World + dedicated face detector.
+# YOLO-World open-vocab "face" is weak; yolov8n-face gives reliable face boxes for rules + UI.
+# Heavier full stack (fire verify + LPD): MODEL_REGISTRY=models/registry.yaml
+
+models:
+  yolo:
+    path: models/yolo/yolov8s-worldv2.pt
+    type: yolo-world
+  face:
+    path: models/face/yolov8n-face.pt
+    type: ultralytics

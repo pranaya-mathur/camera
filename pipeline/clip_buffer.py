@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import subprocess
 import cv2
 import numpy as np
 import redis
@@ -23,6 +25,57 @@ CLIP_DIR = os.getenv(
     "CLIP_DIR", os.path.join(_REPO_ROOT, "storage", "clips")
 )
 os.makedirs(CLIP_DIR, exist_ok=True)
+
+
+def _ensure_browser_playable_mp4(path: str) -> None:
+    """
+    OpenCV mp4v (MPEG-4 Part 2) often won't play in Safari / some browsers.
+    Re-encode to H.264 + yuv420p + faststart when ffmpeg is available.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        print(
+            "[*] Clip saved as mp4v. For reliable browser playback install ffmpeg "
+            "(brew install ffmpeg) — clips will then be re-encoded to H.264.",
+            flush=True,
+        )
+        return
+    tmp = path + ".web.mp4"
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                path,
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "23",
+                "-movflags",
+                "+faststart",
+                "-an",
+                tmp,
+            ],
+            check=True,
+            timeout=120,
+        )
+        os.replace(tmp, path)
+        print(f"[+] Clip re-encoded for web (H.264): {path}", flush=True)
+    except Exception as e:
+        print(f"[!] ffmpeg transcode failed, original file kept: {e}", flush=True)
+        if os.path.isfile(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
 
 def save_clip_worker():
     ps = r.pubsub()
@@ -53,6 +106,10 @@ def save_clip_worker():
             for f in frames:
                 out.write(f)
             out.release()
+            if not os.path.isfile(filename) or os.path.getsize(filename) < 32:
+                print(f"[!] Clip file missing or empty: {filename}", flush=True)
+                continue
+            _ensure_browser_playable_mp4(filename)
             print(f"[+] Saved alert clip: {filename}")
             basename = os.path.basename(filename)
             try:
@@ -79,20 +136,29 @@ def save_clip_worker():
 
 threading.Thread(target=save_clip_worker, daemon=True).start()
 
-print("[*] buffering frames...")
-for msg in sub.listen():
-    if msg["type"] != "message":
-        continue
+
+def main() -> None:
+    print("[*] buffering frames...")
     try:
-        cid_b, img_b = msg["data"].split(b"|", 1)
-        cid = cid_b.decode()
-        frame = cv2.imdecode(np.frombuffer(img_b, np.uint8), cv2.IMREAD_COLOR)
-        if frame is None:
-            continue
-            
-        with buffer_lock:
-            if cid not in buffer:
-                buffer[cid] = deque(maxlen=100) # ~10 seconds of history
-            buffer[cid].append(frame)
-    except Exception as e:
-        print(f"[!] Buffering error: {e}")
+        for msg in sub.listen():
+            if msg["type"] != "message":
+                continue
+            try:
+                cid_b, img_b = msg["data"].split(b"|", 1)
+                cid = cid_b.decode()
+                frame = cv2.imdecode(np.frombuffer(img_b, np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+
+                with buffer_lock:
+                    if cid not in buffer:
+                        buffer[cid] = deque(maxlen=100)  # ~10 seconds of history
+                    buffer[cid].append(frame)
+            except Exception as e:
+                print(f"[!] Buffering error: {e}")
+    except KeyboardInterrupt:
+        print("\n[*] clip_buffer: stopped", flush=True)
+
+
+if __name__ == "__main__":
+    main()

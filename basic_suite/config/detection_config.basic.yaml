@@ -19,7 +19,7 @@ confidence:
 fire_verify_every_frame: false
 
 imgsize:
-  first_pass: 640
+  first_pass: 512
   fire_verify: 800
   lpd: 640
 
@@ -33,6 +33,7 @@ vehicles:
 
 yolo_world_classes:
   - person
+  # face: use dedicated models/face/yolov8n-face.pt (registry.basic.yaml); YOLO-World "face" is unreliable
   - dog
   - cat
   - cow

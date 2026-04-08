@@ -31,43 +31,52 @@ _last_mean = 0.0
 
 print(f"[*] basic_suite motion: channel={FRAME_CHANNEL}, queue={MOTION_QUEUE}, thresh={THRESH}", flush=True)
 
-for msg in sub.listen():
-    if msg["type"] != "message":
-        continue
-    cid, img_bytes = msg["data"].split(b"|", 1)
-    f = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), 1)
-    if f is None:
-        continue
-    
-    # NEW: Privacy Masking
-    if PRIVACY_MODE and _pfilter:
-        faces = _pfilter.detect_faces(f)
-        if faces:
-            f = _pfilter.apply_blur(f, faces)
-            # Re-encode frame if we modified it
-            _, img_encoded = cv2.imencode(".jpg", f)
-            img_bytes = img_encoded.tobytes()
 
-    g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
-    if cid not in prev:
-        prev[cid] = g
-        continue
-    mean_diff = float(cv2.absdiff(prev[cid], g).mean())
-    _frames_in += 1
-    _last_mean = mean_diff
-    if mean_diff > THRESH:
-        # Pushing processed frame to detection queue
-        r.lpush(MOTION_QUEUE, cid + b"|" + img_bytes)
-        r.ltrim(MOTION_QUEUE, 0, 50)
-        _queued += 1
-    now = time.monotonic()
-    if now - _last_hb >= HEARTBEAT_SEC:
-        print(
-            f"[*] basic_suite motion: frames={_frames_in}, queued={_queued}, last_mean={_last_mean:.2f}",
-            flush=True,
-        )
-        _frames_in = 0
-        _queued = 0
-        _last_hb = now
-    prev[cid] = g
+def main() -> None:
+    global _frames_in, _queued, _last_hb, _last_mean
+    try:
+        for msg in sub.listen():
+            if msg["type"] != "message":
+                continue
+            cid, img_bytes = msg["data"].split(b"|", 1)
+            f = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), 1)
+            if f is None:
+                continue
 
+            # NEW: Privacy Masking
+            if PRIVACY_MODE and _pfilter:
+                faces = _pfilter.detect_faces(f)
+                if faces:
+                    f = _pfilter.apply_blur(f, faces)
+                    # Re-encode frame if we modified it
+                    _, img_encoded = cv2.imencode(".jpg", f)
+                    img_bytes = img_encoded.tobytes()
+
+            g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+            if cid not in prev:
+                prev[cid] = g
+                continue
+            mean_diff = float(cv2.absdiff(prev[cid], g).mean())
+            _frames_in += 1
+            _last_mean = mean_diff
+            if mean_diff > THRESH:
+                # Pushing processed frame to detection queue
+                r.lpush(MOTION_QUEUE, cid + b"|" + img_bytes)
+                r.ltrim(MOTION_QUEUE, 0, 50)
+                _queued += 1
+            now = time.monotonic()
+            if now - _last_hb >= HEARTBEAT_SEC:
+                print(
+                    f"[*] basic_suite motion: frames={_frames_in}, queued={_queued}, last_mean={_last_mean:.2f}",
+                    flush=True,
+                )
+                _frames_in = 0
+                _queued = 0
+                _last_hb = now
+            prev[cid] = g
+    except KeyboardInterrupt:
+        print("\n[*] basic_suite motion: stopped", flush=True)
+
+
+if __name__ == "__main__":
+    main()

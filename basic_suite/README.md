@@ -21,18 +21,47 @@ This folder keeps a **separate basic feature pipeline** so your existing repo fl
 
 ## Banalytics-like basic features you can run now
 
-- Ad-hoc surveillance (motion + alerts + clips)
-- Home monitoring (zones + loitering + mobile/webhook-ready alerts)
-- Business facility security (crowd + intrusion + scheduled restrictions)
-- Perimeter / unauthorized access (restricted zones + schedules)
-- Pet monitoring (animal alerts)
-- 24/7 website streaming baseline (MJPEG stream + dashboard)
-- ONVIF/RTSP discovery scanner for one-click-ish provisioning bootstrap
-- Granular RBAC (role permissions + camera allowlists)
-- Plan/feature gating (subscription-like entitlements)
-- Embed token API for website streaming (`/embed/video/{token}`)
-- Remote management control-plane status APIs
-- IoT/SCADA/robotics gamepad integration stubs (API-level)
+Reference: [Banalytics use cases & platform](https://banalytics.live/page.main.tiles#use-cases).
+
+**Defaults in this repo:** **End users** (`viewer`): **no live**, **no clip sharing** — only **JPEG** alert snapshots. **Operators** (`admin` / `manager` / `operator`): **internal MJPEG** + **MP4 clips** (Banalytics-style ops). For **public** live + embed for everyone, set `BASIC_SUITE_LIVE_FEED_MODE=full`.
+
+- Ad-hoc / home / business / perimeter / pet style flows (motion, zones, rules, webhooks)
+- **Alert evidence:** JPEG on every alert for all roles; **MP4** additionally for operators when `BASIC_SUITE_OPERATOR_CLIPS=1`
+- **Live view:** operator-only MJPEG by default; **full** live + embed like Banalytics only if `BASIC_SUITE_LIVE_FEED_MODE=full`
+- ONVIF/RTSP **discovery** helper (not full provisioning stack)
+- Granular RBAC, plans / entitlements, control-plane APIs
+- Embed token API **when** `LIVE_FEED_MODE=full` (disabled in customer-safe default)
+- IoT / SCADA / gamepad **API stubs** (not hardware agents)
+
+## Roadmap: “same as Banalytics” (parity work)
+
+Banalytics is a **full commercial edge + browser console + billing + installers** product. `basic_suite` is an **in-repo MVP**. To move toward parity, work is grouped below (order matters).
+
+| Phase | Goal | Main work in *this* repo |
+|-------|------|---------------------------|
+| **A — Surveillance core** | Match “motion + zones + alerts + storage” story | Tune profiles, retention/TTL for snapshots, webhook/mobile push adapters, stronger zone/schedule UX in UI |
+| **B — Devices & cameras** | Closer to “ONVIF/RTSP/USB + discovery” | Persist discovered cameras into DB/YAML API, health checks, reconnect/backoff, optional USB path in ingest |
+| **C — Access & multi-tenant** | Like “sharing / RBAC / remote console” | Tenant/org model, audit log, invite users, stricter API keys for integrations |
+| **D — Platform packaging** | Like Banalytics **downloads** (Win/Linux/ARM agents) | Separate **edge agent** repo or PyInstaller/binary + updater; `run_basic_suite.py` stays dev orchestrator |
+| **E — Billing & ops** | Pay-per-component / prepaid style | Metering hooks (cameras, AI minutes, storage), Stripe or ledger; not in `basic_suite` today |
+
+**Not realistically “same” without new products:** distributed SCADA depth, drone/joystick stacks, STEM bundles, Telegram/SQL components as shipped by Banalytics — those need **dedicated modules** or integrations, not only `basic_suite` edits.
+
+**If your north star stays “no end-user live + no end-user clips, images only”:** keep current env defaults; operators still get **live + clips** internally — closer to full Banalytics-style operations while customers stay snapshot-only.
+
+## End users vs operators (alerts + clips)
+
+- **`BASIC_SUITE_ALERT_SNAPSHOTS=1`** (default): every alert gets a **JPEG** from `bscam:{cam}:last_jpg`, saved under `storage/alert_snapshots/`, served at **`GET /alert-images/{file}.jpg`** (JWT). **All roles** with `view_alerts` can open snapshots.
+- **`BASIC_SUITE_OPERATOR_CLIPS=1`** (default): **`clip_buffer.py` runs**; operators get **`clip_ready`** with **`/clips/{file}.mp4`** — but **`GET /alerts`**, **WebSocket**, and **`GET /clips/...`** **strip or deny** clip access for non-operator roles (`BASIC_SUITE_CLIP_VIEW_ROLES`, default `admin,manager,operator`). End users never see a clip link.
+- **Legacy:** `BASIC_SUITE_ALERTS_IMAGES_ONLY=1` still **disables the clip pipeline entirely** (snapshots only, no MP4 on disk).
+
+## Customer-safe live video (default)
+
+- `BASIC_SUITE_LIVE_FEED_MODE` (set by `run_basic_suite.py` to **`internal`** by default):
+  - **`internal`**: MJPEG `/video/{cam}` only for roles **`admin`**, **`manager`**, **`operator`** (after RBAC `role_alias` normalization). **Viewer / customer-style roles do not get live feed.** Website **`/embed/video/{token}`** and **`POST /embed/token`** are **disabled** so streams are not exposed to customers via embed.
+  - **`off`**: No one gets authenticated live or embed.
+  - **`full`**: Previous behaviour — any role with `view_streams` + public embed allowed.
+- UI reads **`GET /entitlements`** → `live_feed_for_user` to hide the camera preview for customers.
 
 ## Important scope note
 
@@ -43,22 +72,29 @@ What is added here is a practical MVP implementation of those capabilities withi
 
 ## Run
 
+The API defaults to **port 8000** (same as the main Vite proxy default).
+
 ```bash
 source venv/bin/activate
-python3 basic_suite/run_basic_suite.py --profile home_monitoring --api-port 8100
+python3 basic_suite/run_basic_suite.py --profile home_monitoring
 ```
 
-Then open UI (`npm run dev`) and point API to port `8100` via env:
+On first start, `backend_basic` seeds an **admin** user (RBAC `admin` → all permissions) unless disabled:
+
+- `admin@local.test` / `admin123` (override with `BASIC_SUITE_SEED_ADMIN_EMAIL` and `BASIC_SUITE_SEED_ADMIN_PASSWORD`; set `BASIC_SUITE_SEED_ADMIN=0` to skip).
+
+Then open the UI (proxy targets `8000` by default):
 
 ```bash
 cd ui
-VITE_API_PORT=8100 npm run dev
+npm run dev
+# or: npm run dev:basic  (loads ui/.env.basic, also port 8000)
 ```
 
-Register a user on the same port:
+Register a user manually if you prefer:
 
 ```bash
-curl -X POST "http://127.0.0.1:8100/auth/register?email=you@example.com&password=yourpass&role=admin"
+curl -X POST "http://127.0.0.1:8000/auth/register?email=you@example.com&password=yourpass&role=admin"
 ```
 
 ## CP E25A quick config

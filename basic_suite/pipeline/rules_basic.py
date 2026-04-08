@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import redis
@@ -97,6 +99,24 @@ print(
     flush=True,
 )
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+ALERT_SNAPSHOT_DIR = Path(
+    os.getenv("ALERT_SNAPSHOT_DIR", str(_REPO_ROOT / "storage" / "alert_snapshots"))
+)
+LEGACY_ALERTS_IMAGES_ONLY = os.getenv("BASIC_SUITE_ALERTS_IMAGES_ONLY", "") == "1"
+ALERT_SNAPSHOTS = os.getenv("BASIC_SUITE_ALERT_SNAPSHOTS", "1") == "1"
+OPERATOR_CLIPS = os.getenv("BASIC_SUITE_OPERATOR_CLIPS", "1") == "1"
+if LEGACY_ALERTS_IMAGES_ONLY:
+    OPERATOR_CLIPS = False
+    print(
+        "[*] basic_suite rules: legacy BASIC_SUITE_ALERTS_IMAGES_ONLY=1 → operator MP4 clips disabled",
+        flush=True,
+    )
+if ALERT_SNAPSHOTS:
+    print("[*] basic_suite rules: alert JPEG snapshots ON (all roles see evidence images)", flush=True)
+if OPERATOR_CLIPS:
+    print("[*] basic_suite rules: operator clip pipeline ON (save_clip → MP4 for internal roles)", flush=True)
+
 ZONES_CFG = _load_yaml(_ZONES_PATH).get("cameras") or {}
 zone_state = ZoneRuntimeState()
 _last_emit: Dict[str, float] = {}
@@ -132,7 +152,33 @@ def _cooldown_ok(key: str, seconds: float) -> bool:
     return True
 
 
+def _safe_alert_slug(s: str) -> str:
+    return (re.sub(r"[^a-zA-Z0-9_-]+", "_", (s or ""))[:64]).strip("_") or "x"
+
+
+def _attach_alert_snapshot(cam: str, alert_type: str, payload: Dict[str, Any]) -> None:
+    if not ALERT_SNAPSHOTS:
+        return
+    try:
+        raw = r.get(f"bscam:{cam}:last_jpg")
+    except Exception as e:
+        print(f"[!] snapshot redis read failed: {e}", flush=True)
+        return
+    if not raw:
+        return
+    ALERT_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    fn = f"{int(time.time() * 1000)}_{_safe_alert_slug(cam)}_{_safe_alert_slug(alert_type)}.jpg"
+    path = ALERT_SNAPSHOT_DIR / fn
+    try:
+        path.write_bytes(raw)
+        payload["image"] = f"/alert-images/{fn}"
+    except OSError as e:
+        print(f"[!] alert snapshot write failed: {e}", flush=True)
+
+
 def _maybe_save_clip(cam: str, alert_type: str) -> None:
+    if not OPERATOR_CLIPS:
+        return
     if alert_type not in CLIP_ON_TYPES:
         return
     try:
@@ -183,6 +229,7 @@ def _publish_alert(
         "ts": datetime.utcnow().isoformat() + "Z",
         **extra,
     }
+    _attach_alert_snapshot(cam, alert_type, payload)
     r.publish("alerts", json.dumps(payload))
     _maybe_save_clip(cam, alert_type)
     _webhook_post(payload)
@@ -313,104 +360,107 @@ def _rules_main_loop() -> None:
         "[*] basic_suite rules: subscribed to Redis 'detections' → will publish 'alerts'",
         flush=True,
     )
-    for msg in sub.listen():
-        if msg["type"] != "message":
-            continue
-        data = json.loads(msg["data"])
-        cam = data.get("cam", "unknown")
-        detections: List[Dict[str, Any]] = data.get("detections") or []
-        frame = data.get("frame") or {}
-        w = int(frame.get("w") or 0)
-        h = int(frame.get("h") or 0)
-        if w <= 0 or h <= 0:
-            w, h = infer_frame_size(detections)
-
-        _process_zones(cam, detections, w, h)
-
-        for d in detections:
-            raw_label = d.get("label", "") or ""
-            label = raw_label.lower()
-            cls_id = d.get("cls", -1)
-
-            if d.get("suppressed"):
-                # Skip alerts for detections suppressed by Smart Filtering
+    try:
+        for msg in sub.listen():
+            if msg["type"] != "message":
                 continue
+            data = json.loads(msg["data"])
+            cam = data.get("cam", "unknown")
+            detections: List[Dict[str, Any]] = data.get("detections") or []
+            frame = data.get("frame") or {}
+            w = int(frame.get("w") or 0)
+            h = int(frame.get("h") or 0)
+            if w <= 0 or h <= 0:
+                w, h = infer_frame_size(detections)
 
-            if _fire_smoke_match(label):
-                _publish_alert(
-                    alert_type="fire_hazard",
-                    cam=cam,
-                    label=raw_label.strip() or "Fire / smoke",
-                    severity="critical",
-                    dedupe_key=f"fire:{cam}",
-                )
-                continue
+            _process_zones(cam, detections, w, h)
 
-            custom = _open_vocab_custom_match(label)
-            if custom:
-                at = custom.get("alert_type") or "open_vocab"
-                lab = custom.get("label") or raw_label.strip()
-                dk = f"ov:{cam}:{at}:{custom.get('match')}"
-                _publish_alert(
-                    alert_type=at,
-                    cam=cam,
-                    label=str(lab),
-                    severity="info",
-                    dedupe_key=dk,
-                    match=custom.get("match"),
-                )
-                continue
+            for d in detections:
+                raw_label = d.get("label", "") or ""
+                label = raw_label.lower()
+                cls_id = d.get("cls", -1)
 
-            if label in ["person", "face"]:
-                if ENABLE_PERSON_FEED or _person_in_any_zone(cam, d, w, h):
-                    _publish_alert(
-                        alert_type="intelligence_feed",
-                        cam=cam,
-                        label=f"{label.capitalize()} detected",
-                        severity="info",
-                        dedupe_key=f"personfeed:{cam}:{label}",
-                    )
-                continue
-
-            if label in ["dog", "cat", "monkey", "snake", "reptile"] or (
-                label == "cow" or cls_id == 3
-            ):
-                animal = label if label else "unknown_animal"
-                _publish_alert(
-                    alert_type="animal_intrusion",
-                    cam=cam,
-                    label=f"Animal: {animal.replace('_', ' ')}",
-                    severity="warning",
-                    dedupe_key=f"animal:{cam}:{animal}",
-                    animal=animal,
-                )
-                continue
-
-            if label in VEHICLE_ALERT_TYPES:
-                if not _vehicle_allowed(label):
+                if d.get("suppressed"):
+                    # Skip alerts for detections suppressed by Smart Filtering
                     continue
-                atype = VEHICLE_ALERT_TYPES[label]
-                pretty = raw_label.strip() or label
-                _publish_alert(
-                    alert_type=atype,
-                    cam=cam,
-                    label=f"{pretty} detected",
-                    severity="info",
-                    dedupe_key=f"veh:{cam}:{atype}",
-                    vehicle=label,
-                )
-                continue
 
-            if label == "license plate":
-                plate_text = d.get("text", "Unknown")
-                _publish_alert(
-                    alert_type="security_alert",
-                    cam=cam,
-                    label=f"License Plate: {plate_text}",
-                    severity="info",
-                    dedupe_key=f"plate:{cam}",
-                    plate=plate_text,
-                )
+                if _fire_smoke_match(label):
+                    _publish_alert(
+                        alert_type="fire_hazard",
+                        cam=cam,
+                        label=raw_label.strip() or "Fire / smoke",
+                        severity="critical",
+                        dedupe_key=f"fire:{cam}",
+                    )
+                    continue
+
+                custom = _open_vocab_custom_match(label)
+                if custom:
+                    at = custom.get("alert_type") or "open_vocab"
+                    lab = custom.get("label") or raw_label.strip()
+                    dk = f"ov:{cam}:{at}:{custom.get('match')}"
+                    _publish_alert(
+                        alert_type=at,
+                        cam=cam,
+                        label=str(lab),
+                        severity="info",
+                        dedupe_key=dk,
+                        match=custom.get("match"),
+                    )
+                    continue
+
+                if label in ["person", "face"]:
+                    if ENABLE_PERSON_FEED or _person_in_any_zone(cam, d, w, h):
+                        _publish_alert(
+                            alert_type="intelligence_feed",
+                            cam=cam,
+                            label=f"{label.capitalize()} detected",
+                            severity="info",
+                            dedupe_key=f"personfeed:{cam}:{label}",
+                        )
+                    continue
+
+                if label in ["dog", "cat", "monkey", "snake", "reptile"] or (
+                    label == "cow" or cls_id == 3
+                ):
+                    animal = label if label else "unknown_animal"
+                    _publish_alert(
+                        alert_type="animal_intrusion",
+                        cam=cam,
+                        label=f"Animal: {animal.replace('_', ' ')}",
+                        severity="warning",
+                        dedupe_key=f"animal:{cam}:{animal}",
+                        animal=animal,
+                    )
+                    continue
+
+                if label in VEHICLE_ALERT_TYPES:
+                    if not _vehicle_allowed(label):
+                        continue
+                    atype = VEHICLE_ALERT_TYPES[label]
+                    pretty = raw_label.strip() or label
+                    _publish_alert(
+                        alert_type=atype,
+                        cam=cam,
+                        label=f"{pretty} detected",
+                        severity="info",
+                        dedupe_key=f"veh:{cam}:{atype}",
+                        vehicle=label,
+                    )
+                    continue
+
+                if label == "license plate":
+                    plate_text = d.get("text", "Unknown")
+                    _publish_alert(
+                        alert_type="security_alert",
+                        cam=cam,
+                        label=f"License Plate: {plate_text}",
+                        severity="info",
+                        dedupe_key=f"plate:{cam}",
+                        plate=plate_text,
+                    )
+    except KeyboardInterrupt:
+        print("\n[*] basic_suite rules: stopped", flush=True)
 
 
 if __name__ == "__main__":

@@ -28,9 +28,10 @@ ROOT = Path(__file__).resolve().parent.parent
 BASIC = ROOT / "basic_suite"
 
 
-def run(cmd: str, env: dict, name: str, procs: list[subprocess.Popen]) -> None:
+def run_argv(argv: list[str], env: dict, name: str, procs: list[subprocess.Popen]) -> None:
+    """Avoid shell=True so env vars (e.g. BASIC_MAIN_CAMERA) reliably reach child processes."""
     print(f"[*] Starting {name}...")
-    p = subprocess.Popen(cmd, env=env, shell=True)
+    p = subprocess.Popen(argv, env=env)
     procs.append(p)
 
 
@@ -64,7 +65,12 @@ def _apply_profile_overrides(basic_dir: Path, profile: dict, env: dict) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", default="home_monitoring")
-    parser.add_argument("--api-port", default="8100")
+    parser.add_argument("--api-port", default="8000")
+    parser.add_argument(
+        "--use-webcam",
+        action="store_true",
+        help="Use built-in webcam (camera index 0). Same as BASIC_MAIN_CAMERA=0.",
+    )
     args = parser.parse_args()
 
     use_cases = yaml.safe_load((BASIC / "config" / "use_cases.yaml").read_text()) or {}
@@ -78,6 +84,16 @@ def main() -> int:
     env["PYTHONPATH"] = str(ROOT)
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("REDIS_HOST", "localhost")
+    # Default: no live MJPEG/embed to customer-style roles (viewer); operators keep /video.
+    env.setdefault("BASIC_SUITE_LIVE_FEED_MODE", "internal")
+    # JPEG on every alert (end-user evidence); MP4 clips still recorded for operators unless legacy flag set.
+    env.setdefault("BASIC_SUITE_ALERT_SNAPSHOTS", "1")
+    env.setdefault("BASIC_SUITE_OPERATOR_CLIPS", "1")
+    env.setdefault("ALERT_SNAPSHOT_DIR", str(ROOT / "storage" / "alert_snapshots"))
+    if args.use_webcam:
+        env["BASIC_MAIN_CAMERA"] = "0"
+        # Backup flag: some environments drop arbitrary env keys; ingest honors this too.
+        env["BASIC_SUITE_USE_WEBCAM"] = "1"
     env["DETECTION_CONFIG"] = str(BASIC / "config" / "detection_config.basic.yaml")
     env["ZONES_CONFIG"] = str(BASIC / "config" / "zones.basic.yaml")
     env["BASIC_CAMERAS_CONFIG"] = str(BASIC / "config" / "cameras.basic.yaml")
@@ -88,33 +104,57 @@ def main() -> int:
     env.setdefault("DB_PATH", str(ROOT / "alerts_basic.db"))
     env.setdefault("CLIP_DIR", str(ROOT / "storage" / "clips_basic"))
 
-    # Lightweight defaults
+    # Lightweight defaults: single YOLO-World only (see models/registry.basic.yaml).
+    # Full face + fire-verify + LPD: export MODEL_REGISTRY=models/registry.yaml
+    env.setdefault("MODEL_REGISTRY", str(ROOT / "models" / "registry.basic.yaml"))
     env.setdefault("NUM_WORKERS", "1")
     env.setdefault("BATCH_SIZE", "1")
     env.setdefault("FIRE_VERIFY_EVERY_FRAME", "0")
 
     print("[*] basic_suite profile:", args.profile)
+    print("[*] BASIC_SUITE_LIVE_FEED_MODE:", env.get("BASIC_SUITE_LIVE_FEED_MODE", "internal"))
+    print("[*] BASIC_SUITE_ALERT_SNAPSHOTS:", env.get("BASIC_SUITE_ALERT_SNAPSHOTS", "1"))
+    print("[*] BASIC_SUITE_OPERATOR_CLIPS:", env.get("BASIC_SUITE_OPERATOR_CLIPS", "1"))
+    print("[*] BASIC_MAIN_CAMERA:", env.get("BASIC_MAIN_CAMERA", "(not set)"))
     print("[*] API:", f"http://127.0.0.1:{args.api_port}")
     print("[*] DETECTION_CONFIG:", env["DETECTION_CONFIG"])
     print("[*] ZONES_CONFIG:", env["ZONES_CONFIG"])
     print("[*] BASIC_CAMERAS_CONFIG:", env["BASIC_CAMERAS_CONFIG"])
     print("[*] RUNTIME_CONFIG:", runtime_cfg)
+    print("[*] MODEL_REGISTRY:", env.get("MODEL_REGISTRY", "(default)"))
 
     procs: list[subprocess.Popen] = []
-    py = "venv/bin/python3" if (ROOT / "venv" / "bin" / "python3").exists() else "python3"
+    py = str(ROOT / "venv" / "bin" / "python3") if (ROOT / "venv" / "bin" / "python3").exists() else "python3"
 
     try:
-        run(
-            f"{py} -m uvicorn basic_suite.backend_basic:app --host 127.0.0.1 --port {args.api_port}",
+        run_argv(
+            [
+                py,
+                "-m",
+                "uvicorn",
+                "basic_suite.backend_basic:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(args.api_port),
+            ],
             env,
             "Basic Backend (RBAC+Plans)",
             procs,
         )
-        run(f"{py} basic_suite/pipeline/motion_basic.py", env, "Basic Motion", procs)
-        run(f"{py} pipeline/detect.py", env, "Detection", procs)
-        run(f"{py} basic_suite/pipeline/rules_basic.py", env, "Basic Rules", procs)
-        run(f"{py} pipeline/clip_buffer.py", env, "Clip Buffer", procs)
-        run(f"{py} basic_suite/pipeline/webcam_ingest_basic.py", env, "Basic Ingest", procs)
+        run_argv([py, str(BASIC / "pipeline" / "motion_basic.py")], env, "Basic Motion", procs)
+        run_argv([py, str(ROOT / "pipeline" / "detect.py")], env, "Detection", procs)
+        run_argv([py, str(BASIC / "pipeline" / "rules_basic.py")], env, "Basic Rules", procs)
+        _legacy_img = env.get("BASIC_SUITE_ALERTS_IMAGES_ONLY", "") == "1"
+        _op_clip = env.get("BASIC_SUITE_OPERATOR_CLIPS", "1") == "1" and not _legacy_img
+        if _op_clip:
+            run_argv([py, str(ROOT / "pipeline" / "clip_buffer.py")], env, "Clip Buffer", procs)
+        else:
+            print(
+                "[*] Clip Buffer skipped (set BASIC_SUITE_OPERATOR_CLIPS=1; "
+                "legacy BASIC_SUITE_ALERTS_IMAGES_ONLY forces off)",
+            )
+        run_argv([py, str(BASIC / "pipeline" / "webcam_ingest_basic.py")], env, "Basic Ingest", procs)
 
         print("\n[!] basic_suite running. Monitoring process health...\n")
         

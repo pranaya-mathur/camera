@@ -1,18 +1,27 @@
+import os
+from pathlib import Path
 
 import yaml
 from ultralytics import YOLO
 import onnxruntime as ort
 
+
 class ModelLoader:
-    def __init__(self, path="models/registry.yaml"):
-        with open(path) as f:
+    def __init__(self, path=None):
+        path = path or os.getenv("MODEL_REGISTRY", "models/registry.yaml")
+        reg = Path(path)
+        if not reg.is_file():
+            raise FileNotFoundError(f"Model registry not found: {reg.resolve()}")
+        self._repo_root = reg.resolve().parent.parent
+        with reg.open() as f:
             self.cfg = yaml.safe_load(f)
         self.models = {}
 
     def load(self):
-        import os
         for name, m in self.cfg["models"].items():
             base_path = m["path"]
+            if not os.path.isabs(base_path):
+                base_path = str(self._repo_root / base_path)
             engine_path = base_path.replace(".pt", ".engine")
             
             # Prefer TensorRT engine if it exists
