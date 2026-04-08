@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis_async
 import yaml
 from sqlalchemy.orm import Session
+import cv2
+import numpy as np
 
 # NEW: ONVIF support
 try:
@@ -48,6 +50,69 @@ TOKENS_PATH = Path(os.getenv("BASIC_EMBED_TOKENS", str(BASIC / "config" / "embed
 alerts: List[dict] = []
 clients: set = set()
 process_started_at = time.time()
+
+# Latest detections per camera: {cam_id: {"dets": [...], "ts": float, "fw": int, "fh": int}}
+_latest_dets: dict = {}
+_DETS_TTL = 2.0
+
+# Label → BGR colour
+LABEL_COLOURS = {
+    "person": (0, 220, 0),
+    "face":   (0, 180, 255),
+    "fire":   (0, 60, 255),
+    "smoke":  (80, 80, 220),
+}
+_DEFAULT_COLOUR = (255, 180, 0)
+
+
+def _colour_for(label: str):
+    l = label.lower()
+    for key, col in LABEL_COLOURS.items():
+        if key in l:
+            return col
+    return _DEFAULT_COLOUR
+
+
+def _annotate_frame(jpeg_bytes: bytes, cam_id: str) -> bytes:
+    entry = _latest_dets.get(cam_id)
+    if not entry or (time.time() - entry["ts"]) > _DETS_TTL:
+        return jpeg_bytes
+    dets = entry["dets"]
+    if not dets:
+        return jpeg_bytes
+    frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return jpeg_bytes
+    h, w = frame.shape[:2]
+    det_w = entry.get("fw", w) or w
+    det_h = entry.get("fh", h) or h
+    sx = w / det_w
+    sy = h / det_h
+    for d in dets:
+        if d.get("suppressed"):
+            continue
+        box = d.get("box")
+        if not box or len(box) < 4:
+            continue
+        label = d.get("label", "?")
+        conf = d.get("conf", 0.0)
+        if conf < 0.35:
+            continue
+        x1 = int(box[0] * sx)
+        y1 = int(box[1] * sy)
+        x2 = int(box[2] * sx)
+        y2 = int(box[3] * sy)
+        colour = _colour_for(label)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+        text = f"{label}  {conf:.0%}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        fs = 0.52
+        (tw, th), bl = cv2.getTextSize(text, font, fs, 1)
+        ty = max(y1 - 4, th + 4)
+        cv2.rectangle(frame, (x1, ty - th - bl - 2), (x1 + tw + 4, ty + 2), colour, cv2.FILLED)
+        cv2.putText(frame, text, (x1 + 2, ty - bl), font, fs, (10, 10, 10), 1, cv2.LINE_AA)
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return buf.tobytes()
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -227,17 +292,69 @@ async def _redis_alert_listener() -> None:
             pass
 
 
+async def _redis_detection_listener() -> None:
+    """Cache latest detections per camera for frame annotation."""
+    client = redis_async.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    pubsub = client.pubsub()
+    await pubsub.subscribe("detections")
+    try:
+        while True:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+            if not msg or msg.get("type") != "message":
+                continue
+            try:
+                payload = json.loads(msg["data"])
+            except Exception:
+                continue
+            cam = payload.get("cam") or ""
+            if cam:
+                finfo = payload.get("frame") or {}
+                _latest_dets[cam] = {
+                    "dets": payload.get("detections") or [],
+                    "ts": time.time(),
+                    "fw": finfo.get("w", 640),
+                    "fh": finfo.get("h", 360),
+                }
+    finally:
+        try:
+            await pubsub.unsubscribe("detections")
+            await pubsub.aclose()
+            await client.aclose()
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_redis_alert_listener())
+    # Ensure default admin user for basic suite testing
+    db = next(get_db())
+    try:
+        admin = db.query(User).filter(User.email == "admin@securevu.ai").first()
+        if not admin:
+            print("[*] Creating default admin user: admin@securevu.ai / admin123")
+            new_admin = User(
+                email="admin@securevu.ai",
+                hashed_password=get_password_hash("admin123"),
+                role="admin"
+            )
+            db.add(new_admin)
+            db.commit()
+    except Exception as e:
+        print(f"[!] Could not create default user: {e}")
+    finally:
+        db.close()
+
+    task_alerts = asyncio.create_task(_redis_alert_listener())
+    task_dets = asyncio.create_task(_redis_detection_listener())
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in (task_alerts, task_dets):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(lifespan=lifespan, title="basic_suite control-plane API")
@@ -310,8 +427,16 @@ def entitlements(current_user: User = Depends(_require_perm("view_alerts"))):
 
 
 @app.get("/control-plane/status")
-def control_plane_status(current_user: User = Depends(_require_perm("view_alerts"))):
+async def control_plane_status(current_user: User = Depends(_require_perm("view_alerts"))):
     cams = _load_cameras()
+    # Read recording state from Redis
+    r_client = redis_async.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    is_rec = await r_client.get("RECORDING_ENABLED")
+    if is_rec is None:
+        await r_client.set("RECORDING_ENABLED", "1")
+        is_rec = "1"
+    await r_client.aclose()
+    
     return {
         "uptime_sec": int(time.time() - process_started_at),
         "redis_host": REDIS_HOST,
@@ -320,7 +445,25 @@ def control_plane_status(current_user: User = Depends(_require_perm("view_alerts
         "rbac_config": str(RBAC_CFG_PATH),
         "plans_config": str(PLANS_CFG_PATH),
         "privacy_mode": os.getenv("PRIVACY_MODE", "0") == "1",
+        "recording_enabled": is_rec == "1"
     }
+
+
+@app.post("/control-plane/recording")
+async def toggle_recording(
+    enabled: Optional[bool] = Query(None),
+    current_user: User = Depends(_require_perm("view_alerts"))
+):
+    r_client = redis_async.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    if enabled is None:
+        curr = await r_client.get("RECORDING_ENABLED")
+        new_val = "0" if curr == "1" else "1"
+    else:
+        new_val = "1" if enabled else "0"
+    
+    await r_client.set("RECORDING_ENABLED", new_val)
+    await r_client.aclose()
+    return {"status": "ok", "recording_enabled": new_val == "1"}
 
 
 @app.get("/control-plane/cameras")
@@ -339,7 +482,7 @@ def control_plane_cameras(current_user: User = Depends(_require_perm("view_strea
 @app.post("/cameras/{cam_id}/ptz")
 async def ptz_control(
     cam_id: str,
-    action: str = Query(..., regex="^(UP|DOWN|LEFT|RIGHT|ZOOM_IN|ZOOM_OUT|STOP)$"),
+    action: str = Query(..., pattern="^(UP|DOWN|LEFT|RIGHT|ZOOM_IN|ZOOM_OUT|STOP)$"),
     current_user: User = Depends(_require_perm("view_streams")),
 ):
     if cam_id not in _allowed_cameras(current_user):
@@ -407,15 +550,16 @@ async def embed_video(token: str):
             while True:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if not msg:
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0)
                     continue
                 if msg["type"] == "message":
                     data = msg["data"]
                     if b"|" in data:
                         cid_bytes, frame_bytes = data.split(b"|", 1)
                         if cid_bytes.decode() == cam_id:
-                            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-                await asyncio.sleep(0.005)
+                            annotated = _annotate_frame(frame_bytes, cam_id)
+                            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + annotated + b"\r\n"
+                await asyncio.sleep(0)
         finally:
             try:
                 await pubsub.unsubscribe("frames")
@@ -424,7 +568,11 @@ async def embed_video(token: str):
             except Exception:
                 pass
 
-    return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/integrations/iot/command")
@@ -470,7 +618,34 @@ def get_cameras(current_user: User = Depends(_require_perm("view_streams"))):
 
 
 @app.get("/video/{cam_id}")
-async def video_feed(cam_id: str, current_user: User = Depends(_require_perm("view_streams"))):
+async def video_feed(
+    cam_id: str, 
+    token: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    # Support token in query param for <img> tags
+    current_user = None
+    if token:
+        try:
+            current_user = await get_current_user(token=token, db=db)
+        except Exception:
+            pass
+    
+    if not current_user:
+        # Fallback to standard header auth if no query token
+        # (This will raise 401 if missing)
+        try:
+            from backend.auth import oauth2_scheme
+            # This is a bit hacky but works for the dependency injection
+            # manual call if needed, but easier to just use a guest-friendly check
+            pass
+        except: pass
+        
+        # For simplicity in basic_suite, we'll just require the token param or we'll try to get it from header
+        # Actually, let's just make it required but allow from query.
+        if not current_user:
+             raise HTTPException(status_code=401, detail="Authentication required")
+
     if cam_id not in _allowed_cameras(current_user):
         raise HTTPException(status_code=403, detail="Camera not allowed")
 
@@ -482,15 +657,16 @@ async def video_feed(cam_id: str, current_user: User = Depends(_require_perm("vi
             while True:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if not msg:
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0)
                     continue
                 if msg["type"] == "message":
                     data = msg["data"]
                     if b"|" in data:
                         cid_bytes, frame_bytes = data.split(b"|", 1)
                         if cid_bytes.decode() == cam_id:
-                            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-                await asyncio.sleep(0.005)
+                            annotated = _annotate_frame(frame_bytes, cam_id)
+                            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + annotated + b"\r\n"
+                await asyncio.sleep(0)
         finally:
             try:
                 await pubsub.unsubscribe("frames")
@@ -499,8 +675,11 @@ async def video_feed(cam_id: str, current_user: User = Depends(_require_perm("vi
             except Exception:
                 pass
 
-    return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
-
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache", "X-Accel-Buffering": "no"},
+    )
 
 @app.get("/alerts")
 def get_alerts(current_user: User = Depends(_require_perm("view_alerts"))):

@@ -1,0 +1,68 @@
+fire_trigger_keywords:
+- fire
+- smoke
+- flame
+fire_alert_keywords:
+- fire
+- smoke
+- flame
+confidence:
+  first_pass: 0.12
+  fire_soft: 0.04
+  fire_verify: 0.1
+  lpd: 0.25
+fire_verify_every_frame: false
+imgsize:
+  first_pass: 640
+  fire_verify: 800
+  lpd: 640
+vehicles:
+- car
+- bus
+- truck
+- motorcycle
+- scooter
+- auto rickshaw
+yolo_world_classes:
+- person
+- dog
+- cat
+- cow
+- monkey
+- snake
+- reptile
+- backpack
+- bag
+- car
+- bus
+- truck
+- motorcycle
+- scooter
+- auto rickshaw
+- license plate
+- fire
+- smoke
+- flame
+- suitcase
+rules_engine:
+  alert_cooldown_seconds: 25
+  enable_generic_person_feed: false
+  clip_on_alert_types:
+  - fire_hazard
+  - zone_intrusion
+  - zone_crowd
+  - zone_loitering
+  - hoa_vehicle_violation
+  - vehicle_car
+  - vehicle_truck
+vehicle_policy:
+  mode: all
+  deny: []
+  allow: []
+open_vocab_custom:
+- match: backpack
+  alert_type: object_watch
+  label: Backpack / bag watch
+- match: suitcase
+  alert_type: object_watch
+  label: Suitcase detected

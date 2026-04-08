@@ -70,3 +70,9 @@ body {
 .animate-fade {
   animation: fadeIn 0.5s forwards;
 }
+
+@keyframes pulse-red {
+  0% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  70% { opacity: 0.8; transform: scale(1.1); box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}

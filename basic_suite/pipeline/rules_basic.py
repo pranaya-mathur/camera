@@ -136,6 +136,11 @@ def _maybe_save_clip(cam: str, alert_type: str) -> None:
     if alert_type not in CLIP_ON_TYPES:
         return
     try:
+        # Check global recording toggle
+        is_enabled = r.get("RECORDING_ENABLED")
+        if is_enabled == b"0":
+            return
+
         r.publish("save_clip", f"{cam}|{alert_type}")
     except Exception as e:
         print(f"[!] save_clip publish failed: {e}", flush=True)
@@ -171,7 +176,12 @@ def _publish_alert(
 ) -> bool:
     cam = str(cam)
     dk = dedupe_key or f"{alert_type}:{cam}:{label}"
-    if not _cooldown_ok(dk, ENGINE_COOLDOWN):
+    
+    # Custom cooldown: 10 seconds for person alerts (intelligence_feed),
+    # otherwise use the global default (e.g. 25s).
+    cooldown = 10.0 if alert_type == "intelligence_feed" else ENGINE_COOLDOWN
+    
+    if not _cooldown_ok(dk, cooldown):
         return False
 
     payload = {
@@ -183,9 +193,20 @@ def _publish_alert(
         "ts": datetime.utcnow().isoformat() + "Z",
         **extra,
     }
-    r.publish("alerts", json.dumps(payload))
+
+    # Suppress specific alerts from the Live Feed (UI) to keep it clean,
+    # but keep the 'functioning' (like recording clips) intact.
+    suppressed_from_feed = (
+        alert_type == "animal_intrusion" or 
+        alert_type.startswith("vehicle_") or
+        alert_type == "object_watch"
+    )
+
+    if not suppressed_from_feed:
+        r.publish("alerts", json.dumps(payload))
+        _webhook_post(payload)
+    
     _maybe_save_clip(cam, alert_type)
-    _webhook_post(payload)
     return True
 
 

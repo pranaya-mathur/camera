@@ -17,6 +17,93 @@ sub.subscribe("frames")
 buffer = {}
 buffer_lock = threading.Lock()
 
+# ── Detection overlay ─────────────────────────────────────────────────────────
+_det_cache: dict = {}   # cam_id -> {"dets": [...], "ts": float, "fw": int, "fh": int}
+_det_lock  = threading.Lock()
+_DETS_TTL  = 2.0        # seconds before detections expire
+
+_LABEL_COLOURS = {
+    "person": (0, 220, 0),
+    "face":   (0, 180, 255),
+    "fire":   (0, 60,  255),
+    "smoke":  (80, 80, 220),
+}
+_DEFAULT_COLOUR = (255, 180, 0)
+
+
+def _detection_subscriber():
+    """Background thread: keep _det_cache updated with latest detections."""
+    ps = r.pubsub()
+    ps.subscribe("detections")
+    for msg in ps.listen():
+        if msg["type"] != "message":
+            continue
+        try:
+            payload = json.loads(msg["data"])
+            cam = payload.get("cam") or ""
+            if cam:
+                finfo = payload.get("frame") or {}
+                with _det_lock:
+                    _det_cache[cam] = {
+                        "dets": payload.get("detections") or [],
+                        "ts":   time.time(),
+                        "fw":   finfo.get("w", 640),
+                        "fh":   finfo.get("h", 360),
+                    }
+        except Exception:
+            pass
+
+
+threading.Thread(target=_detection_subscriber, daemon=True).start()
+
+
+def _draw_dets(frame: np.ndarray, cam_id: str) -> np.ndarray:
+    """Draw bounding-box overlays on a cv2 BGR frame in-place."""
+    with _det_lock:
+        entry = _det_cache.get(cam_id)
+    if not entry or (time.time() - entry["ts"]) > _DETS_TTL:
+        return frame
+    dets = entry["dets"]
+    if not dets:
+        return frame
+
+    h, w = frame.shape[:2]
+    det_w = entry.get("fw", w) or w
+    det_h = entry.get("fh", h) or h
+    sx = w / det_w
+    sy = h / det_h
+
+    for d in dets:
+        if d.get("suppressed"):
+            continue
+        box = d.get("box")
+        if not box or len(box) < 4:
+            continue
+        label = d.get("label", "?")
+        conf  = d.get("conf", 0.0)
+        if conf < 0.35:
+            continue
+
+        x1 = int(box[0] * sx)
+        y1 = int(box[1] * sy)
+        x2 = int(box[2] * sx)
+        y2 = int(box[3] * sy)
+
+        lbl_key = label.lower()
+        colour  = next((v for k, v in _LABEL_COLOURS.items() if k in lbl_key), _DEFAULT_COLOUR)
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+
+        text = f"{label}  {conf:.0%}"
+        font  = cv2.FONT_HERSHEY_SIMPLEX
+        fs    = 0.52
+        (tw, th), bl = cv2.getTextSize(text, font, fs, 1)
+        ty = max(y1 - 4, th + 4)
+        cv2.rectangle(frame, (x1, ty - th - bl - 2), (x1 + tw + 4, ty + 2), colour, cv2.FILLED)
+        cv2.putText(frame, text, (x1 + 2, ty - bl), font, fs, (10, 10, 10), 1, cv2.LINE_AA)
+
+    return frame
+
 _PIPELINE_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_PIPELINE_DIR)
 CLIP_DIR = os.getenv(
@@ -93,6 +180,6 @@ for msg in sub.listen():
         with buffer_lock:
             if cid not in buffer:
                 buffer[cid] = deque(maxlen=100) # ~10 seconds of history
-            buffer[cid].append(frame)
+            buffer[cid].append(_draw_dets(frame, cid))   # annotate before storing
     except Exception as e:
         print(f"[!] Buffering error: {e}")

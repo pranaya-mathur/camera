@@ -72,7 +72,7 @@ vehicle_policy:
 
 open_vocab_custom:
   - match: backpack
-    alert_type: object_watch
+    alert_type: backpack_alert
     label: "Backpack / bag watch"
   - match: suitcase
     alert_type: object_watch

@@ -5,10 +5,9 @@
 #   fight over the camera and OpenCV will spam "not authorized" / "failed to initialize".
 # - Use an RTSP URL string for IP cameras, e.g. rtsp://user:pass@192.168.1.50:554/stream1
 #
-# macOS: grant Camera access to the app running Python (Terminal, Cursor, iTerm, etc.):
-#   System Settings → Privacy & Security → Camera
 
 cameras:
-  main: 0
-  # office: rtsp://192.168.1.100/stream1
-  # gate: 1
+  cam1: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=1&subtype=0"
+  cam2: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=2&subtype=0"
+  cam3: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=3&subtype=0"
+  cam4: "rtsp://test:qazwsx2580@192.168.2.25:554/cam/realmonitor?channel=4&subtype=0"

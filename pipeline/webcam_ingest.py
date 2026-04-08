@@ -62,14 +62,32 @@ def main():
         flush=True,
     )
 
+    # Track consecutive read failures per camera for reconnect
+    fail_counts: dict = {cid: 0 for cid in caps}
+    RECONNECT_AFTER = 30  # reconnect after 30 consecutive failed reads
+
     loops = 0
     publishes = 0
     t0 = time.monotonic()
     while True:
-        for cid, cap in caps.items():
+        for cid, cap in list(caps.items()):
             ret, frame = cap.read()
             if not ret:
+                fail_counts[cid] = fail_counts.get(cid, 0) + 1
+                if fail_counts[cid] >= RECONNECT_AFTER:
+                    src = CAMS[cid]
+                    print(f"[!] {cid}: stream lost, reconnecting to {src!r} …", flush=True)
+                    cap.release()
+                    new_cap = open_capture(src)
+                    if new_cap.isOpened():
+                        caps[cid] = new_cap
+                        fail_counts[cid] = 0
+                        print(f"[*] {cid}: reconnected.", flush=True)
+                    else:
+                        print(f"[!] {cid}: reconnect failed, will retry.", flush=True)
+                        fail_counts[cid] = RECONNECT_AFTER - 5  # retry soon
                 continue
+            fail_counts[cid] = 0
             frame = cv2.resize(frame, (640, 360))
             _, buf = cv2.imencode(".jpg", frame)
             r.publish("frames", cid.encode() + b"|" + buf.tobytes())

@@ -19,21 +19,27 @@ export default function Dashboard({ userRole, onLogout }) {
   const [typeFilter, setTypeFilter] = useState('all');
   const [searchCam, setSearchCam] = useState('');
   const [privacyMode, setPrivacyMode] = useState(false);
+  const [isRecording, setIsRecording] = useState(true);
 
   useEffect(() => {
-    fetch(`${API_BASE}/cameras`)
+    const token = localStorage.getItem('token');
+    fetch(`${API_BASE}/cameras`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
       .then((r) => r.json())
       .then((d) => setCameras(d.cameras || []))
-      .catch(() => setCameras([{ id: 'main', name: 'Main Camera' }]));
+      .catch(() => setCameras([{ id: 'cam1', name: 'Camera 1' }]));
 
     fetch(`${API_BASE}/control-plane/status`, {
       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
     })
       .then(r => r.json())
-      .then(d => setPrivacyMode(d.privacy_mode))
+      .then(d => {
+        setPrivacyMode(d.privacy_mode);
+        setIsRecording(d.recording_enabled);
+      })
       .catch(() => {});
 
-    const token = localStorage.getItem('token');
     if (token) {
       fetch(`${API_BASE}/alerts`, { headers: { Authorization: `Bearer ${token}` } })
         .then((r) => (r.ok ? r.json() : Promise.reject()))
@@ -44,6 +50,19 @@ export default function Dashboard({ userRole, onLogout }) {
         .catch(() => {});
     }
   }, []);
+
+  const toggleRecording = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/control-plane/recording`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      });
+      const data = await res.json();
+      setIsRecording(data.recording_enabled);
+    } catch (e) {
+      console.error("Recording toggle error", e);
+    }
+  };
 
   const handlePTZ = async (camId, action) => {
     try {
@@ -141,7 +160,36 @@ export default function Dashboard({ userRole, onLogout }) {
           }}
         >
           <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <h1 style={{ fontSize: 20 }}>SecureVU Command Center</h1>
+            <motion.div
+              onClick={toggleRecording}
+              whileTap={{ scale: 0.95 }}
+              className="glass-card"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 14px',
+                cursor: 'pointer',
+                border: isRecording ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid #374151',
+                background: isRecording ? 'rgba(239, 68, 68, 0.1)' : 'rgba(0,0,0,0.3)',
+              }}
+            >
+              <div 
+                style={{ 
+                  width: 8, 
+                  height: 8, 
+                  borderRadius: '50%', 
+                  background: isRecording ? '#ef4444' : '#9ca3af',
+                  animation: isRecording ? 'pulse-red 2s infinite' : 'none'
+                }} 
+              />
+              <span style={{ fontSize: 11, fontWeight: 600, color: isRecording ? '#ef4444' : '#9ca3af', letterSpacing: '0.05em' }}>
+                {isRecording ? 'RECORDING' : 'PAUSED'}
+              </span>
+            </motion.div>
+          </div>
             <p style={{ fontSize: 13, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 8 }}>
               Role: <span style={{ color: '#3b82f6' }}>{userRole.toUpperCase()}</span>
               {privacyMode && (
@@ -254,7 +302,7 @@ export default function Dashboard({ userRole, onLogout }) {
                 }}
               >
                 <img
-                  src={`${API_BASE}/video/${cam.id}`}
+                  src={`${API_BASE}/video/${cam.id}?token=${localStorage.getItem('token')}`}
                   alt={cam.name}
                   style={{
                     width: '100%',

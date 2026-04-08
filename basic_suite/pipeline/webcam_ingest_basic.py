@@ -71,13 +71,37 @@ def main():
 
     print(f"[*] basic_suite ingest active: {list(caps.keys())}", flush=True)
 
+    # Per-camera sources for reconnect
+    cam_sources = {}
+    for cid, src in CAMS.items():
+        if src is None:
+            continue
+        cam_sources[cid] = src.get("stream_url", "") if isinstance(src, dict) else str(src)
+
+    fail_counts: dict = {cid: 0 for cid in caps}
+    RECONNECT_AFTER = 30
+
     publishes = 0
     t0 = time.monotonic()
     while True:
-        for cid, cap in caps.items():
+        for cid, cap in list(caps.items()):
             ret, frame = cap.read()
             if not ret:
+                fail_counts[cid] = fail_counts.get(cid, 0) + 1
+                if fail_counts[cid] >= RECONNECT_AFTER:
+                    src_val = cam_sources.get(cid, "")
+                    print(f"[!] {cid}: stream lost, reconnecting to {src_val!r} …", flush=True)
+                    cap.release()
+                    new_cap = open_capture(src_val)
+                    if new_cap.isOpened():
+                        caps[cid] = new_cap
+                        fail_counts[cid] = 0
+                        print(f"[*] {cid}: reconnected.", flush=True)
+                    else:
+                        print(f"[!] {cid}: reconnect failed, will retry.", flush=True)
+                        fail_counts[cid] = RECONNECT_AFTER - 5
                 continue
+            fail_counts[cid] = 0
             frame = cv2.resize(frame, (640, 360))
             ok, buf = cv2.imencode(".jpg", frame)
             if not ok:

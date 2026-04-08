@@ -6,6 +6,14 @@ from datetime import datetime
 import cv2
 import numpy as np
 import redis
+import multiprocessing as mp
+
+# Force 'spawn' to avoid CUDA forking issues
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+
 
 from detection_settings import (
     box_cls_int,
@@ -90,22 +98,42 @@ def _resolve_device() -> str:
     return auto()
 
 
-DEVICE = _resolve_device()
-print(f"[*] Targeting device: {DEVICE}", flush=True)
+DEVICE = None
 
-models_dict = ModelLoader().load()
-for name, m in models_dict.items():
-    if hasattr(m, "to"):
-        try:
-            m.to(DEVICE)
-        except Exception as e:
-            print(f"[!] Model '{name}' .to({DEVICE!r}) failed: {e}", flush=True)
+def _get_device():
+    global DEVICE
+    if DEVICE is not None:
+        return DEVICE
+    DEVICE = _resolve_device()
+    print(f"[*] Targeting device: {DEVICE}", flush=True)
+    return DEVICE
 
-if "yolo" in models_dict and hasattr(models_dict["yolo"], "set_classes"):
-    models_dict["yolo"].set_classes(CFG["yolo_world_classes"])
+
+models_dict = None
+
+
+def _load_models():
+    global models_dict
+    if models_dict is not None:
+        return models_dict
+
+    dev = _get_device()
+    models_dict = ModelLoader().load()
+    for name, m in models_dict.items():
+        if hasattr(m, "to"):
+            try:
+                m.to(dev)
+            except Exception as e:
+                print(f"[!] Model '{name}' .to({dev!r}) failed: {e}", flush=True)
+
+    if "yolo" in models_dict and hasattr(models_dict["yolo"], "set_classes"):
+        models_dict["yolo"].set_classes(CFG["yolo_world_classes"])
+
+    print(f"[*] Loaded models: {list(models_dict.keys())}", flush=True)
+    return models_dict
+
 
 print("[*] Listening on motion_queue (Redis BRPOP)", flush=True)
-print(f"[*] Loaded models: {list(models_dict.keys())}", flush=True)
 print(
     f"[*] Detection config: {os.environ.get('DETECTION_CONFIG', 'pipeline/detection_config.yaml')}",
     flush=True,
@@ -126,13 +154,14 @@ else:
 def _run_first_pass(frame, all_detections):
     sz = IMGSZ["first_pass"]
     cf = CONF["first_pass"]
-    for name, model in models_dict.items():
+    md = _load_models()
+    for name, model in md.items():
         if name == "fire":
             continue
         if not callable(model):
             continue
         try:
-            res = model(frame, imgsz=sz, conf=cf, verbose=False, device=DEVICE)
+            res = model(frame, imgsz=sz, conf=cf, verbose=False, device=_get_device())
         except Exception as e:
             print(f"[!] Model '{name}' inference error: {e}")
             continue
@@ -173,9 +202,10 @@ def _strip_soft_fire_labels(all_detections):
 
 
 def _run_fire_verify(frame, all_detections, cid: str):
-    if "fire" not in models_dict:
+    md = _load_models()
+    if "fire" not in md:
         return
-    model = models_dict["fire"]
+    model = md["fire"]
     if not callable(model):
         return
     try:
@@ -184,7 +214,7 @@ def _run_fire_verify(frame, all_detections, cid: str):
             imgsz=IMGSZ["fire_verify"],
             conf=CONF["fire_verify"],
             verbose=False,
-            device=DEVICE,
+            device=_get_device(),
         )
     except Exception as e:
         print(f"[!] Fire model error: {e}")
@@ -217,9 +247,10 @@ def _has_vehicle(all_detections):
 
 
 def _run_lpd(frame, all_detections, cid: str):
-    if "lpd" not in models_dict:
+    md = _load_models()
+    if "lpd" not in md:
         return
-    model = models_dict["lpd"]
+    model = md["lpd"]
     if not callable(model):
         return
     all_detections[:] = [
@@ -231,7 +262,7 @@ def _run_lpd(frame, all_detections, cid: str):
             imgsz=IMGSZ["lpd"],
             conf=CONF["lpd"],
             verbose=False,
-            device=DEVICE,
+            device=_get_device(),
         )
     except Exception as e:
         print(f"[!] LPD error: {e}")
@@ -363,7 +394,7 @@ def _env_flag(name: str, default_true: bool = True) -> bool:
 
 
 def worker_loop():
-    print(f"[*] Worker process {os.getpid()} started (device={DEVICE})", flush=True)
+    print(f"[*] Worker process {os.getpid()} started (device={_get_device()})", flush=True)
     _frames_done = 0
     _LOG_EVERY = int(os.getenv("DETECT_LOG_EVERY_N_FRAMES", "20"))
     _log_detections = _env_flag("DETECT_LOG_DETECTIONS", default_true=True)
@@ -431,7 +462,8 @@ def worker_loop():
 
 if __name__ == "__main__":
     print(f"[*] Starting {NUM_WORKERS} parallel workers with batch_size={BATCH_SIZE}", flush=True)
-    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+    # Using mp.get_context('spawn') is critical for CUDA stability
+    with ProcessPoolExecutor(max_workers=NUM_WORKERS, mp_context=mp.get_context('spawn')) as executor:
         futures = [executor.submit(worker_loop) for _ in range(NUM_WORKERS)]
         for future in futures:
             future.result() # Keep main process alive
