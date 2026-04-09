@@ -8,7 +8,22 @@ from sqlalchemy.orm import Session
 from .db import get_db, User
 
 # Secret key for JWT
-SECRET_KEY = os.getenv("SECRET_KEY", "b38d38e8f8a846f8820c74f5d6f3b4e2")
+def _load_secret(name: str, default: str) -> str:
+    # 1. Try environment variable
+    val = os.getenv(name)
+    if val:
+        return val
+    # 2. Try mounted secret file (common in GCP/K8s)
+    secret_path = f"/etc/secrets/{name}"
+    if os.path.exists(secret_path):
+        try:
+            with open(secret_path, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return default
+
+SECRET_KEY = _load_secret("SECRET_KEY", "b38d38e8f8a846f8820c74f5d6f3b4e2")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

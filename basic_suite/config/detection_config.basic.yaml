@@ -40,8 +40,6 @@ yolo_world_classes:
   - monkey
   - snake
   - reptile
-  - backpack
-  - bag
   - car
   - bus
   - truck
@@ -52,11 +50,10 @@ yolo_world_classes:
   - fire
   - smoke
   - flame
-  - suitcase
 
 rules_engine:
-  alert_cooldown_seconds: 25
-  enable_generic_person_feed: false
+  alert_cooldown_seconds: 10
+  enable_generic_person_feed: true
   clip_on_alert_types:
     - fire_hazard
     - zone_intrusion
@@ -71,10 +68,4 @@ vehicle_policy:
   deny: []
   allow: []
 
-open_vocab_custom:
-  - match: backpack
-    alert_type: object_watch
-    label: "Backpack / bag watch"
-  - match: suitcase
-    alert_type: object_watch
-    label: "Suitcase detected"
+open_vocab_custom: []

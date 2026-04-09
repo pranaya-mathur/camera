@@ -13,8 +13,8 @@ cameras:
           - [1.0, 1.0]
           - [0.0, 1.0]
         restricted: false
-        crowd_max: 10
-        loitering_seconds: 90
+        crowd_max: 3
+        loitering_seconds: 20
         loitering_min_persons: 1
 
       - id: perimeter_top

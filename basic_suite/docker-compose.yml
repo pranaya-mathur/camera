@@ -1,0 +1,30 @@
+# Run from repository root:
+#   docker compose -f basic_suite/docker-compose.yml up --build
+#
+# API: http://<VM_EXTERNAL_IP>:8000  (open port 8000 in GCP firewall or use SSH tunnel)
+services:
+  redis:
+    image: redis:7
+    restart: unless-stopped
+
+  basic-suite:
+    build:
+      context: ..
+      dockerfile: basic_suite/Dockerfile
+    depends_on:
+      - redis
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_HOST: redis
+      DEVICE: cpu
+      BASIC_SUITE_API_HOST: 0.0.0.0
+      BASIC_SUITE_DATA_DIR: /data/basic_suite
+      # Set your RTSP URL or extend config/cameras.basic.yaml via bind mount.
+      # BASIC_MAIN_CAMERA: "rtsp://user:pass@host:554/stream"
+    volumes:
+      - basic_suite_data:/data/basic_suite
+
+volumes:
+  basic_suite_data:

@@ -97,6 +97,42 @@ Register a user manually if you prefer:
 curl -X POST "http://127.0.0.1:8000/auth/register?email=you@example.com&password=yourpass&role=admin"
 ```
 
+## Docker / GCP pilot (Automated)
+
+We have added automated tools to make deployment on GCP smooth and efficient.
+
+### 1. Build & Push (Cloud Build)
+Automate your container builds using Google Cloud Build. This tags and pushes the `basic-suite` image to YOUR project's Container Registry.
+
+```bash
+gcloud builds submit --config cloudbuild.yaml .
+```
+
+### 2. Automated Pilot Provisioning (GCE)
+On a local machine with `gcloud` configured, run the setup script to provision a VM and configure networking.
+
+```bash
+bash basic_suite/gcp_pilot_setup.sh
+```
+
+**What this script does:**
+- Enables Compute Engine and Container Registry APIs.
+- Creates a VPC firewall rule for **TCP 8000** (dashboard).
+- Provisions a VM pre-configured with the **Container-Optimized OS** and your latest image.
+
+### 3. Manual / Basic Docker
+If you prefer a manual setup or are using a non-GCP VM:
+1. Clone the repo and set **`BASIC_MAIN_CAMERA`**.
+2. Run from the root:
+   ```bash
+   docker compose -f basic_suite/docker-compose.yml up --build
+   ```
+3. Ensure port **8000** is open in your cloud provider's firewall.
+
+### Persistence & Secrets
+- SQlite + clips + snapshots persist in the **`basic_suite_data`** volume.
+- **Secrets**: The backend now supports loading from `/etc/secrets/SECRET_KEY`. For GCP, you can mount Secret Manager secrets as files on the VM.
+
 ## CP E25A quick config
 
 You can configure CP E25A in two ways:

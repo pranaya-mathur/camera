@@ -64,8 +64,20 @@ def _apply_profile_overrides(basic_dir: Path, profile: dict, env: dict) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", default="home_monitoring")
-    parser.add_argument("--api-port", default="8000")
+    parser.add_argument(
+        "--profile",
+        default=os.environ.get("BASIC_SUITE_PROFILE", "home_monitoring"),
+    )
+    parser.add_argument(
+        "--api-port",
+        default=os.environ.get("BASIC_SUITE_API_PORT", "8000"),
+    )
+    parser.add_argument(
+        "--api-host",
+        default=os.environ.get("BASIC_SUITE_API_HOST", "127.0.0.1"),
+        help="Bind address for FastAPI. Use 0.0.0.0 for Docker/cloud VMs. "
+        "Override with BASIC_SUITE_API_HOST.",
+    )
     parser.add_argument(
         "--use-webcam",
         action="store_true",
@@ -89,7 +101,14 @@ def main() -> int:
     # JPEG on every alert (end-user evidence); MP4 clips still recorded for operators unless legacy flag set.
     env.setdefault("BASIC_SUITE_ALERT_SNAPSHOTS", "1")
     env.setdefault("BASIC_SUITE_OPERATOR_CLIPS", "1")
-    env.setdefault("ALERT_SNAPSHOT_DIR", str(ROOT / "storage" / "alert_snapshots"))
+    _data = os.environ.get("BASIC_SUITE_DATA_DIR", "").strip()
+    if _data:
+        _root = Path(_data)
+        env.setdefault("DB_PATH", str(_root / "alerts_basic.db"))
+        env.setdefault("CLIP_DIR", str(_root / "clips_basic"))
+        env.setdefault("ALERT_SNAPSHOT_DIR", str(_root / "alert_snapshots"))
+    else:
+        env.setdefault("ALERT_SNAPSHOT_DIR", str(ROOT / "storage" / "alert_snapshots"))
     if args.use_webcam:
         env["BASIC_MAIN_CAMERA"] = "0"
         # Backup flag: some environments drop arbitrary env keys; ingest honors this too.
@@ -100,9 +119,10 @@ def main() -> int:
     env["MOTION_DIFF_MEAN_THRESHOLD"] = str(profile.get("motion_diff_threshold", 3.0))
     runtime_cfg = _apply_profile_overrides(BASIC, profile, env)
 
-    # Keep data separated from main suite.
-    env.setdefault("DB_PATH", str(ROOT / "alerts_basic.db"))
-    env.setdefault("CLIP_DIR", str(ROOT / "storage" / "clips_basic"))
+    # Keep data separated from main suite (defaults unless BASIC_SUITE_DATA_DIR set above).
+    if not _data:
+        env.setdefault("DB_PATH", str(ROOT / "alerts_basic.db"))
+        env.setdefault("CLIP_DIR", str(ROOT / "storage" / "clips_basic"))
 
     # Lightweight defaults: single YOLO-World only (see models/registry.basic.yaml).
     # Full face + fire-verify + LPD: export MODEL_REGISTRY=models/registry.yaml
@@ -116,7 +136,9 @@ def main() -> int:
     print("[*] BASIC_SUITE_ALERT_SNAPSHOTS:", env.get("BASIC_SUITE_ALERT_SNAPSHOTS", "1"))
     print("[*] BASIC_SUITE_OPERATOR_CLIPS:", env.get("BASIC_SUITE_OPERATOR_CLIPS", "1"))
     print("[*] BASIC_MAIN_CAMERA:", env.get("BASIC_MAIN_CAMERA", "(not set)"))
-    print("[*] API:", f"http://127.0.0.1:{args.api_port}")
+    _bind = args.api_host
+    _suffix = " (all interfaces)" if _bind in ("0.0.0.0", "::") else ""
+    print(f"[*] API: http://{_bind}:{args.api_port}{_suffix}")
     print("[*] DETECTION_CONFIG:", env["DETECTION_CONFIG"])
     print("[*] ZONES_CONFIG:", env["ZONES_CONFIG"])
     print("[*] BASIC_CAMERAS_CONFIG:", env["BASIC_CAMERAS_CONFIG"])
@@ -134,7 +156,7 @@ def main() -> int:
                 "uvicorn",
                 "basic_suite.backend_basic:app",
                 "--host",
-                "127.0.0.1",
+                str(args.api_host),
                 "--port",
                 str(args.api_port),
             ],
