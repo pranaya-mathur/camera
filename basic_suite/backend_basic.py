@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 import redis.asyncio as redis_async
 import yaml
@@ -733,6 +734,14 @@ async def ws(ws: WebSocket, token: Optional[str] = Query(None)):
             alerts_ws_clients.remove(pair)
         except ValueError:
             pass
+
+
+# Serve UI static files
+UI_DIST = BASIC / "ui" / "dist"
+if UI_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(UI_DIST), html=True), name="ui")
+else:
+    print(f"[!] Warning: UI dist folder not found at {UI_DIST}. Frontend will not be served.")
 
 
 @app.get("/health")

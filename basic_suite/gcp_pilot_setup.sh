@@ -7,7 +7,7 @@ set -e
 PROJECT_ID=$(gcloud config get-value project)
 ZONE=${ZONE:-us-central1-a}
 INSTANCE_NAME=${INSTANCE_NAME:-securevu-pilot-vm}
-MACHINE_TYPE=${MACHINE_TYPE:-n2-standard-4} # Sufficient for multi-cam CPU pilot
+MACHINE_TYPE=${MACHINE_TYPE:-e2-standard-4} # Sufficient for multi-cam CPU pilot + Cost Effective
 
 echo "[*] Preparing GCP Pilot for Project: $PROJECT_ID"
 

@@ -4,22 +4,26 @@ steps:
     args: [
       'build',
       '-t', 'gcr.io/$PROJECT_ID/securevu-basic-suite:latest',
-      '-t', 'gcr.io/$PROJECT_ID/securevu-basic-suite:$SHORT_SHA',
       '-f', 'basic_suite/Dockerfile',
       '.'
     ]
 
   # 2. Push to Container Registry (GCR)
-  # Note: Use Artifact Registry if GCR is deprecated in the target project.
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/securevu-basic-suite:latest']
 
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/securevu-basic-suite:$SHORT_SHA']
+  # 3. Deploy to GCE (Update existing container)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args: [
+      'compute', 'instances', 'update-container', 'securevu-pilot-vm',
+      '--project=$PROJECT_ID',
+      '--zone=us-central1-a',
+      '--container-image=gcr.io/$PROJECT_ID/securevu-basic-suite:latest'
+    ]
 
 images:
   - 'gcr.io/$PROJECT_ID/securevu-basic-suite:latest'
-  - 'gcr.io/$PROJECT_ID/securevu-basic-suite:$SHORT_SHA'
 
 options:
   logging: CLOUD_LOGGING_ONLY

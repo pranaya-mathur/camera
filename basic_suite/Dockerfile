@@ -1,5 +1,12 @@
-# Build from repository root:
-#   docker build -f basic_suite/Dockerfile -t securevu-basic-suite .
+# Stage 1: Build the UI
+FROM node:18-slim AS ui-builder
+WORKDIR /ui
+COPY ui/package*.json ./
+RUN npm install
+COPY ui ./
+RUN npm run build
+
+# Stage 2: Final image
 FROM python:3.10-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,6 +30,8 @@ COPY models /app/models
 COPY pipeline /app/pipeline
 COPY backend /app/backend
 COPY basic_suite /app/basic_suite
+# Copy built UI from stage 1
+COPY --from=ui-builder /ui/dist /app/basic_suite/ui/dist
 
 RUN bash /app/models/setup_models.sh
 
