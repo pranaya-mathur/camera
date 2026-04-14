@@ -8,6 +8,19 @@ opencv:
     winStride: [4, 4]
     padding: [8, 8]
     scale: 1.05
+    resize_width: 640
+    resize_height: 360
+  cat:
+    scaleFactor: 1.1
+    minNeighbors: 3
   heuristics:
     animal_max_height: 100
     animal_min_aspect_ratio: 1.5
+    fire:
+      enabled: true
+      hsv_lower: [0, 100, 100]  # Standard orange/red range start
+      hsv_upper: [25, 255, 255] # Standard orange/red range end
+      min_area: 500             # Minimum pixel area for a fire blob
+rules_engine:
+  alert_cooldown_seconds: 15
+  enable_generic_person_feed: true

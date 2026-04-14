@@ -40,6 +40,10 @@ def main():
         env["BASIC_MAIN_CAMERA"] = "0"
         env["BASIC_SUITE_USE_WEBCAM"] = "1"
 
+    # Localization
+    env["DETECTION_CONFIG"] = str(OPENCV_SUITE / "config" / "detection_config.opencv.yaml")
+    env["ZONES_CONFIG"] = str(OPENCV_SUITE / "config" / "zones.opencv.yaml")
+
     procs: list[subprocess.Popen] = []
     py = str(ROOT / "venv" / "bin" / "python3") if (ROOT / "venv" / "bin" / "python3").exists() else "python3"
 
