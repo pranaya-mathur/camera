@@ -1,0 +1,13 @@
+# OpenCV Detection Config
+opencv:
+  face:
+    scaleFactor: 1.1
+    minNeighbors: 5
+    minSize: [30, 30]
+  person:
+    winStride: [4, 4]
+    padding: [8, 8]
+    scale: 1.05
+  heuristics:
+    animal_max_height: 100
+    animal_min_aspect_ratio: 1.5
